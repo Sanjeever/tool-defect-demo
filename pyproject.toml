@@ -1,0 +1,28 @@
+[project]
+name = "tool-defect-demo"
+version = "0.1.0"
+description = "使用 Anomalib 与 YOLO 学习刀具缺陷检测"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "anomalib==2.7.0",
+    "imagecodecs==2024.12.30",
+    "numpy==1.26.4",
+    "opencv-python-headless==4.11.0.86",
+    "pillow>=11,<13",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "ultralytics-opencv-headless==8.4.190",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
