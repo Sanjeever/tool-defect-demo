@@ -10,25 +10,29 @@ export interface Sample extends Specimen {
   id: string; path: string; width: number; height: number; included: boolean; view: string; created_at: string
   boxes: Box[]; annotated: boolean; specimen_quality: Quality
 }
-export interface Workspace { specimens: Specimen[]; images: Sample[] }
+export interface Scheme { tool_type: string; view: string; anomaly_job: string; detector_job: string | null }
+export interface Workspace { specimens: Specimen[]; images: Sample[]; schemes: Scheme[]; geti_ready?: boolean }
 export interface Camera { connected: boolean; sn: string | null; fps?: number; size?: number[]; error?: string }
 export interface Job {
   id: string; kind?: 'train' | 'detect'; status: string; phase: string; created_at: string
-  tool_type: string; view: string; model: 'patchcore' | 'classifier'; experimental: boolean
+  tool_type: string; view: string; model: 'patchcore' | 'detector' | 'scheme'; experimental: boolean
   checkpoint: string | null; error: string
-  settings?: { roi: Roi; source_size: number[]; preprocessing: string }
-  result?: { label: string; anomaly_score: number; classification?: { category: string; confidence: number; decision: string } }
-  review?: { quality: Quality; note: string; at: string }
+  settings?: { preprocessing: string }
+  result?: { label: string; anomaly_score: number | null; anomaly_label?: string; source_size: number[]; boxes: Box[]; tool_type?: string; view?: string; experimental?: boolean; defect_status?: string; models?: { anomaly: string; detector: string | null }; recognition: { method: string; similarity: number | null; candidates: (Scheme & { similarity: number })[] } }
+  review?: { quality: Quality; note: string; at: string; boxes: Box[]; tool_type?: string; view?: string }
+  reviews?: Job['review'][]; adopted_image?: string
+  metrics?: { scope: string; values: Record<string, number> }
 }
 export interface Plan {
   ready: boolean; issues: string[]
   counts: Record<'train' | 'val' | 'test', { good: number; defect: number; specimens: number }>
 }
 export type Run = (action: () => Promise<unknown>) => Promise<void>
-export type Page = 'collect' | 'review' | 'models' | 'detect'
+export type Page = 'collect' | 'review' | 'models' | 'detect' | 'records'
 export interface PageProps {
   tool: string; view: string; data: Workspace; jobs: Job[]; camera: Camera; busy: boolean; run: Run
   navigate: (page: Page) => void
+  onDirty: (dirty: boolean) => void
 }
 export const qualities = { unknown: '待确认', good: '好件', defect: '坏件' }
 export const splits = { unassigned: '未分组', train: '训练', val: '验证', test: '测试' }
@@ -54,4 +58,4 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
 }
 export const imageUrl = (id: string) => `/api/images/${id}/file`
 export const artifact = (job: string, name: string) => `/api/jobs/${job}/artifact?${query({ name })}`
-export const jobTitle = (job: Job) => `${job.created_at?.replace('T', ' ')} · ${job.model === 'patchcore' ? 'PatchCore' : 'YOLO'}${job.experimental ? ' · 未校准' : ''}`
+export const jobTitle = (job: Job) => `${job.created_at?.replace('T', ' ')} · ${job.model === 'patchcore' ? 'PatchCore' : 'Geti'}${job.experimental ? ' · 实验' : ''}`

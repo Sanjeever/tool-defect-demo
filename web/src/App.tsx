@@ -1,33 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@heroui/react'
-import { Aperture, ArrowRight, X } from 'lucide-react'
+import { Aperture, ScanLine, Images, Layers3, History, X } from 'lucide-react'
 import { api, type Camera, type Job, type Page, type Workspace } from './api'
 import Collect from './Collect'
 import Review from './Review'
 import Models from './Models'
 import Detect from './Detect'
 
-const steps: { id: Page; name: string; description: string }[] = [
-  { id: 'collect', name: '拍摄样本', description: '先拍好件，再拍坏件。每次拍摄保持相同位置和朝向。' },
-  { id: 'review', name: '筛选图片', description: '采用清晰、完整的图片。好件用于学习正常外观，坏件留作对照。' },
-  { id: 'models', name: '创建模型', description: '框住需要观察的刀片区域，用好件图片建立正常外观参考。' },
-  { id: 'detect', name: '检测刀具', description: '拍摄或导入一张图片，查看与正常外观的差异。' },
-]
+const tabs = [{ id: 'detect', name: '检测', Icon: ScanLine }, { id: 'review', name: '样本', Icon: Images }, { id: 'models', name: '模型', Icon: Layers3 }, { id: 'records', name: '记录', Icon: History }] as const
 
 export default function App() {
-  const [page, setPage] = useState<Page>('collect')
-  const [tool, setTool] = useState('第1组刀具')
+  const [page, setPage] = useState<Page>('detect')
+  const [tool, setTool] = useState('刀具01')
   const [view, setView] = useState('top')
-  const [data, setData] = useState<Workspace>({ specimens: [], images: [] })
+  const [data, setData] = useState<Workspace>({ specimens: [], images: [], schemes: [] })
   const [jobs, setJobs] = useState<Job[]>([])
   const [camera, setCamera] = useState<Camera>({ connected: false, sn: null })
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [dirty, setDirty] = useState(false)
+  useEffect(() => {
+    const preventClose = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault() }
+    window.addEventListener('beforeunload', preventClose)
+    return () => window.removeEventListener('beforeunload', preventClose)
+  }, [dirty])
   const refresh = useCallback(async () => {
-    const [state, tasks, device] = await Promise.all([
-      api<Workspace>('/api/state'), api<Job[]>('/api/jobs'), api<Camera>('/api/camera/status'),
-    ])
+    const [state, tasks, device] = await Promise.all([api<Workspace>('/api/state'), api<Job[]>('/api/jobs'), api<Camera>('/api/camera/status')])
     setData(state); setJobs(tasks); setCamera(device)
   }, [])
   useEffect(() => {
@@ -35,10 +34,8 @@ export default function App() {
     let disposed = false
     let timer: ReturnType<typeof setTimeout>
     const poll = async () => {
-      try {
-        const [tasks, device] = await Promise.all([api<Job[]>('/api/jobs'), api<Camera>('/api/camera/status')])
-        if (!disposed) { setJobs(tasks); setCamera(device) }
-      } catch (e) { if (!disposed) setError((e as Error).message) }
+      try { const [tasks, device] = await Promise.all([api<Job[]>('/api/jobs'), api<Camera>('/api/camera/status')]); if (!disposed) { setJobs(tasks); setCamera(device) } }
+      catch (e) { if (!disposed) setError((e as Error).message) }
       if (!disposed) timer = setTimeout(poll, 1500)
     }
     timer = setTimeout(poll, 1500)
@@ -47,43 +44,20 @@ export default function App() {
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true); setError('')
     try { await action() } catch (e) { setError((e as Error).message) }
-    finally {
-      try { await refresh() } catch (e) { setError((e as Error).message) }
-      setBusy(false)
-    }
+    finally { try { await refresh() } catch (e) { setError((e as Error).message) }; setBusy(false) }
   }
-  const props = { tool, view, data, jobs, camera, busy, run, navigate: setPage }
-  const samples = data.images.filter(i => i.tool_type === tool && i.view === view)
-  const models = jobs.filter(j => j.kind === 'train' && j.tool_type === tool && j.view === view && j.status === 'succeeded')
-  const detections = jobs.filter(j => j.kind === 'detect' && j.tool_type === tool && j.view === view)
-  const counts = [`${samples.length} 张已保存`, `${samples.filter(i => i.included).length} 张已采用`, `${models.length} 个模型`, `${detections.length} 次检测`]
-  const current = steps.findIndex(step => step.id === page)
+  const navigate = (next: Page) => { if (dirty) setError('请先保存或撤销当前标注'); else setPage(next) }
+  const changeTool = (value: string) => { if (dirty) setError('请先保存或撤销当前标注'); else setTool(value) }
+  const changeView = (value: string) => { if (dirty) setError('请先保存或撤销当前标注'); else setView(value) }
+  const props = { tool, view, data, jobs, camera, busy, run, navigate, onDirty: setDirty }
+  const contextual = ['collect', 'review', 'models'].includes(page)
   const active = jobs.find(j => ['running', 'stopping'].includes(j.status))
-  const views: Record<string, string> = { top: '正面', side: '侧面', bottom: '背面' }
-
-  return <div className="app-shell">
-    <header className="app-header"><div className="brand"><Aperture size={24} strokeWidth={1.6} /><span>刀具检测工作台</span></div>
-      <div className="connection"><span className={camera.connected ? 'dot connected' : 'dot'} /><span>{camera.connected ? '相机已连接' : '相机未连接'}</span>
-        {camera.connected && <Button variant="ghost" size="sm" isDisabled={busy} onPress={() => void run(() => api('/api/camera/disconnect', 'POST'))}>断开</Button>}
-        <span className="device-name mono">MER-132-30GM</span></div>
-    </header>
-    <div className="workspace-shell">
-      <nav className="workflow" aria-label="操作步骤">{steps.map((step, index) => <button key={step.id} className={page === step.id ? 'workflow-step active' : 'workflow-step'}
-        aria-current={page === step.id ? 'step' : undefined} onClick={() => setPage(step.id)}><span className="step-number">{index + 1}</span>
-        <span><span className="step-title">{step.name}</span><span className="step-count">{counts[index]}</span></span>{index < 3 && <ArrowRight size={14} className="step-arrow" />}</button>)}</nav>
-      <div className="context-bar"><div className="context-fields"><label>刀具组<input aria-label="刀具组" list="tool-types" maxLength={80} value={tool} onChange={e => setTool(e.target.value)} />
-        <datalist id="tool-types">{[...new Set(data.specimens.map(s => s.tool_type))].map(value => <option key={value} value={value} />)}</datalist></label>
-        <label>拍摄面<select aria-label="拍摄面" value={view} onChange={e => setView(e.target.value)}>{[...new Set([...Object.keys(views), ...data.images.map(i => i.view)])].map(value => <option key={value} value={value}>{views[value] ?? value}</option>)}</select></label></div>
-        <span className="context-hint">同一种型号放在同一组</span>
-      </div>
-      <main><div className="page-heading"><div><h1>{steps[current].name}</h1><p>{steps[current].description}</p></div>
-        {active && <span className="status status-running" role="status">{active.kind === 'detect' ? '检测中' : '模型创建中'}</span>}
-      </div>
-      {error && <div role="alert" className="error-bar"><span>{error}</span><Button variant="ghost" size="sm" isIconOnly aria-label="关闭错误" onPress={() => setError('')}><X size={16} /></Button></div>}
-      <div className={`page-content page-${page}`}>{loading ? <div className="empty" role="status">正在读取工作台…</div> : !tool.trim() ? <div className="empty">请填写刀具组名称</div>
-        : page === 'collect' ? <Collect key={`${tool}/${view}`} {...props} /> : page === 'review' ? <Review key={`${tool}/${view}`} {...props} /> : page === 'models' ? <Models key={`${tool}/${view}`} {...props} /> : <Detect key={`${tool}/${view}`} {...props} />}
-      </div>
-      </main>
-    </div>
-  </div>
+  const counts = [data.schemes.length ? `${data.schemes.length} 个方案` : '', `${data.images.length} 张图片`, `${jobs.filter(j => j.kind === 'train' && j.status === 'succeeded').length} 个模型`, `${jobs.filter(j => j.kind === 'detect').length} 条记录`]
+  return <div className="app-shell"><header className="app-header"><div className="brand"><Aperture size={22} strokeWidth={1.6} /><span>刀具视觉工作台</span></div><div className="connection"><span className={camera.connected ? 'dot connected' : 'dot'} /><span>{camera.connected ? '相机已连接' : '相机未连接'}</span>{camera.connected && <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => void run(() => api('/api/camera/disconnect', 'POST'))}>断开</Button>}<span className="device-name mono">MER-132-30GM</span></div></header>
+    <div className={`workspace-shell ${contextual ? '' : 'without-context'}`}><nav className="workflow" aria-label="工作区">{tabs.map(({ id, name, Icon }, index) => <button key={id} disabled={busy} className={`workflow-step ${page === id || (id === 'review' && page === 'collect') ? 'active' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon size={17} strokeWidth={1.6} /><span><span className="step-title">{name}</span><span className="step-count">{counts[index]}</span></span></button>)}</nav>
+      {contextual && <div className="context-bar"><div className="context-fields"><label>刀具类型<input aria-label="刀具类型" disabled={busy || dirty} list="tool-types" value={tool} maxLength={80} onChange={e => changeTool(e.target.value)} /><datalist id="tool-types">{[...new Set([...Array.from({ length: 7 }, (_, i) => `刀具0${i + 1}`), ...data.specimens.map(s => s.tool_type)])].map(value => <option key={value}>{value}</option>)}</datalist></label><label>拍摄面<select aria-label="拍摄面" disabled={busy || dirty} value={view} onChange={e => changeView(e.target.value)}><option value="top">正面</option><option value="bottom">背面</option></select></label></div>{page === 'collect' && <Button size="sm" variant="ghost" onPress={() => navigate('review')}>返回样本</Button>}</div>}
+      <main>{active && <div className="active-task" role="status"><span>{active.kind === 'train' ? '模型训练中' : '检测中'} · {active.tool_type === 'auto' ? '自动识别' : active.tool_type}</span><Button variant="ghost" size="sm" isDisabled={busy || active.status === 'stopping'} onPress={() => void run(() => api(`/api/jobs/${active.id}/stop`, 'POST'))}>{active.status === 'stopping' ? '停止中' : '停止任务'}</Button></div>}
+        {error && <div className="error-bar" role="alert"><span>{error}</span><Button variant="ghost" size="sm" isIconOnly aria-label="关闭错误" onPress={() => setError('')}><X size={16} /></Button></div>}
+        <div className={`page-content page-${page}`}>{loading ? <div className="empty">正在读取工作台…</div> : contextual && !tool.trim() ? <div className="empty">请填写刀具类型</div> : page === 'collect' ? <Collect key={`${tool}/${view}`} {...props} /> : page === 'review' ? <Review key={`${tool}/${view}`} {...props} /> : page === 'models' ? <Models key={`${tool}/${view}`} {...props} /> : <Detect key={page} {...props} records={page === 'records'} />}</div>
+      </main></div></div>
 }

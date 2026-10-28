@@ -39,12 +39,13 @@ export default function JobLog({ job, busy, run }: { job?: Job; busy: boolean; r
     <span className="muted">{job.status === 'running' ? phases[job.phase] : ''}</span><Button variant="ghost" size="sm" onPress={() => setExpanded(!expanded)}>{expanded ? '任务信息' : '查看日志'}</Button></div>
     {expanded ? <><div className="job-log-area" ref={area.ref}><pre className="job-log" aria-label="模型任务日志">{lines.slice(currentPage * rows, (currentPage + 1) * rows).join('\n')}</pre></div>
       <Pager page={currentPage} pages={pages} onChange={setPage} label="日志" /></> : <div className="job-status-body">
-      <p>{job.kind === 'detect' ? '检测任务' : job.model === 'patchcore' ? 'PatchCore 正常外观参考' : 'YOLO 缺陷分类'}</p><span className="muted">{job.created_at.replace('T', ' ')}</span>
+      <p>{job.kind === 'detect' ? '检测任务' : job.model === 'patchcore' ? 'PatchCore 正常外观参考' : 'Geti 缺陷区域检测'}</p><span className="muted">{job.created_at.replace('T', ' ')}</span>
       {(job.error || error) && <p role="alert" className="inline-error">{job.error || error}</p>}
       {['running', 'stopping'].includes(job.status) && <Button variant="danger-soft" size="sm" isDisabled={busy || job.status === 'stopping'} onPress={() => void run(() => api(`/api/jobs/${job.id}/stop`, 'POST'))}>停止任务</Button>}
     </div>}
     <div className="job-files"><a className="text-link" href={artifact(job.id, 'manifest.json')} target="_blank" rel="noreferrer">数据清单</a>
       <a className="text-link" href={artifact(job.id, 'run.log')} target="_blank" rel="noreferrer">完整日志</a>
+      {job.metrics && <a className="text-link" href={artifact(job.id, 'detector/metrics.json')} target="_blank" rel="noreferrer">{job.metrics.scope}指标</a>}
       {job.checkpoint && <a className="text-link" href={artifact(job.id, 'model.zip')}>下载模型</a>}</div>
   </section>
 }

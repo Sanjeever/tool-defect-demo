@@ -41,7 +41,7 @@ export default function Collect({ tool, view, data, camera, busy, run, navigate 
           setSpecimen(e.target.value); const existing = specimens.find(s => s.specimen_id === e.target.value); if (existing) setQuality(existing.quality)
         }} /><datalist id="specimen-ids">{specimens.map(s => <option key={s.specimen_id} value={s.specimen_id} />)}</datalist><span className="field-help">同一把刀具保持编号不变。</span></label>
         <div className="capture-count" aria-live="polite"><strong>{own.length}</strong><span>张已保存到「{specimen || '当前刀具'}」</span></div>
-        <p className="capture-tip">每件先拍 20～30 张，取下再放回，保持光线和朝向一致。</p>
+        <p className="capture-tip">取下再放回，覆盖不同位置和旋转角度。正反面分别采集。</p>
         <Button fullWidth isDisabled={!camera.connected || !!camera.error || busy || !specimen.trim()} onPress={() => void capture()}><Camera size={17} />{busy ? '处理中…' : '拍照保存'}</Button>
         <Button fullWidth variant="outline" isDisabled={busy || !specimen.trim()} onPress={() => upload.current?.click()}><ImagePlus size={16} />导入已有图片</Button>
         <input ref={upload} type="file" hidden multiple accept="image/png,image/jpeg,image/bmp,image/tiff" aria-label="导入样本图片" onChange={e => {
@@ -49,7 +49,7 @@ export default function Collect({ tool, view, data, camera, busy, run, navigate 
         }} />
       </section>
     </div>
-    <div className="capture-bottom"><div><h2>本组已拍 {samples.length} 张</h2><span className="muted">好件 {samples.filter(i => i.quality === 'good').length} 张 · 坏件 {samples.filter(i => i.quality === 'defect').length} 张</span></div>
-      <Button variant="outline" isDisabled={!samples.length} onPress={() => navigate('review')}>下一步：筛选图片<ArrowRight size={16} /></Button></div>
+    <div className="capture-bottom"><div><h2>已拍 {samples.length} 张</h2><span className="muted">已标注 {samples.filter(i => i.annotated).length} 张</span></div>
+      <Button variant="outline" isDisabled={!samples.length} onPress={() => navigate('review')}>标注样本<ArrowRight size={16} /></Button></div>
   </>
 }
