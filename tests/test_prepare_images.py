@@ -10,20 +10,20 @@ from prepare_images import prepare_directory, prepare_image
 class PrepareImagesTests(unittest.TestCase):
     def test_long_tool_keeps_both_ends(self):
         image = Image.new("RGB", (100, 20), "white")
-        image.paste("red", (0, 0, 10, 20))
-        image.paste("blue", (90, 0, 100, 20))
+        image.paste((80, 80, 80), (0, 0, 10, 20))
+        image.paste((160, 160, 160), (90, 0, 100, 20))
         result = prepare_image(image, None, 100)
         self.assertEqual(result.size, (100, 100))
-        self.assertEqual(result.getpixel((0, 50)), (255, 0, 0))
-        self.assertEqual(result.getpixel((99, 50)), (0, 0, 255))
+        self.assertEqual(result.getpixel((0, 50)), (80, 80, 80))
+        self.assertEqual(result.getpixel((99, 50)), (160, 160, 160))
         self.assertEqual(result.getpixel((50, 0)), (0, 0, 0))
 
     def test_roi_uses_exclusive_right_and_bottom(self):
         image = Image.new("RGB", (20, 20), "white")
-        image.paste("red", (5, 5, 15, 15))
+        image.paste((80, 80, 80), (5, 5, 15, 15))
         result = prepare_image(image, (5, 5, 15, 15), 10)
-        self.assertEqual(result.getpixel((0, 0)), (255, 0, 0))
-        self.assertEqual(result.getpixel((9, 9)), (255, 0, 0))
+        self.assertEqual(result.getpixel((0, 0)), (80, 80, 80))
+        self.assertEqual(result.getpixel((9, 9)), (80, 80, 80))
 
     def test_invalid_roi_is_rejected_instead_of_padding(self):
         image = Image.new("L", (20, 20))
@@ -35,6 +35,10 @@ class PrepareImagesTests(unittest.TestCase):
         result = prepare_image(Image.new("L", (10, 10), 128), None, 10)
         self.assertEqual(result.mode, "RGB")
         self.assertEqual(result.getpixel((5, 5)), (128, 128, 128))
+
+    def test_color_import_uses_the_same_grayscale_pipeline(self):
+        result = prepare_image(Image.new("RGB", (10, 10), "red"), None, 10)
+        self.assertEqual(result.getpixel((5, 5)), (76, 76, 76))
 
     def test_directory_preserves_splits_and_does_not_overwrite(self):
         with TemporaryDirectory() as temporary:

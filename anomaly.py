@@ -26,7 +26,7 @@ def make_datamodule(root, split, batch_size):
     )
 
 
-def make_engine(device, output):
+def make_engine(device, output, **options):
     import torch
     from anomalib.engine import Engine
 
@@ -37,6 +37,7 @@ def make_engine(device, output):
         devices=1,
         default_root_dir=output,
         logger=False,
+        **options,
     )
 
 
@@ -47,14 +48,27 @@ def train(args):
     checkpoint = args.output / "model.ckpt"
     if checkpoint.exists():
         raise FileExistsError(f"模型已存在，请指定新的 --output：{checkpoint}")
-    datamodule = make_datamodule(args.data, "val", args.batch_size)
     seed_everything(42, workers=True)
-    model = Patchcore(backbone="resnet18", coreset_sampling_ratio=0.01, visualizer=False)
+    model = Patchcore(backbone="resnet18", coreset_sampling_ratio=0.01, visualizer=False,
+                      post_processor=not args.experimental, evaluator=False)
     engine = make_engine(args.device, args.output)
-    engine.fit(model=model, datamodule=datamodule)
+    if args.experimental:
+        from anomalib.data import FolderDataset
+        from torch.utils.data import DataLoader
+
+        check_prepared_images(args.data / "train/good")
+        dataset = FolderDataset(name="tool", root=args.data.resolve(), normal_dir="train/good", split="train")
+        loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=0, collate_fn=dataset.collate_fn)
+        engine = make_engine(args.device, args.output, limit_val_batches=0, num_sanity_val_steps=0)
+        engine.fit(model=model, train_dataloaders=loader)
+    else:
+        engine.fit(model=model, datamodule=make_datamodule(args.data, "val", args.batch_size))
     args.output.mkdir(parents=True, exist_ok=True)
     engine.trainer.save_checkpoint(checkpoint)
-    print(f"已保存模型与验证集校准参数：{checkpoint.resolve()}")
+    (args.output / "model.json").write_text(json.dumps({
+        "experimental": args.experimental, "preprocessing": "gray-pad-256-v1",
+    }), encoding="utf-8")
+    print(f"已保存{'未校准实验模型' if args.experimental else '模型与验证集校准参数'}：{checkpoint.resolve()}")
 
 
 def load_model(checkpoint):
@@ -62,12 +76,18 @@ def load_model(checkpoint):
 
     if not checkpoint.is_file():
         raise FileNotFoundError(f"模型不存在，请先训练：{checkpoint}")
-    return Patchcore.load_from_checkpoint(checkpoint, map_location="cpu", pre_trained=False, visualizer=False)
+    metadata = checkpoint.with_name("model.json")
+    experimental = json.loads(metadata.read_text(encoding="utf-8"))["experimental"] if metadata.exists() else False
+    return Patchcore.load_from_checkpoint(checkpoint, map_location="cpu", pre_trained=False,
+                                         visualizer=False, post_processor=not experimental, evaluator=False)
 
 
 def test(args):
     from anomalib.metrics import AUROC, Evaluator, F1Score
 
+    metadata = args.checkpoint.with_name("model.json")
+    if metadata.exists() and json.loads(metadata.read_text(encoding="utf-8"))["experimental"]:
+        raise ValueError("未校准实验模型不能用于正式指标测试，请补充独立验证实物后重新训练")
     datamodule = make_datamodule(args.data, "test", args.batch_size)
     model = load_model(args.checkpoint)
     model.evaluator = Evaluator(test_metrics=[
@@ -111,10 +131,10 @@ def predict(args):
         for batch in predictions:
             for index, image_path in enumerate(batch.image_path):
                 path = Path(image_path)
-                anomalous = bool(batch.pred_label[index].item())
+                anomalous = bool(batch.pred_label[index].item()) if batch.pred_label is not None else None
                 result = {
                     "image": str(path),
-                    "label": "异常" if anomalous else "正常",
+                    "label": "未校准" if anomalous is None else "异常" if anomalous else "正常",
                     "anomaly_score": float(batch.pred_score[index].item()),
                 }
                 if anomalous and classifier is not None:
@@ -122,7 +142,10 @@ def predict(args):
 
                     result["classification"] = classify_image(classifier, path, args.device, args.min_confidence)
                 anomaly_map = batch.anomaly_map[index].detach().cpu().numpy().squeeze()
-                heatmap = cv2.applyColorMap((np.clip(anomaly_map, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                display_map = anomaly_map
+                if anomalous is None:
+                    display_map = (anomaly_map - anomaly_map.min()) / max(float(np.ptp(anomaly_map)), 1e-8)
+                heatmap = cv2.applyColorMap((np.clip(display_map, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
                 heatmap = Image.fromarray(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB))
                 with Image.open(path) as image:
                     overlay = Image.blend(image.convert("RGB"), heatmap.resize(image.size), alpha=0.45)
@@ -151,6 +174,8 @@ def main():
         if name in ("train", "test"):
             command.add_argument("--data", type=Path, default=Path("data/anomaly"))
             command.add_argument("--batch-size", type=int, default=4)
+        if name == "train":
+            command.add_argument("--experimental", action="store_true", help="仅用正常训练图建库，输出原始分数，不校准阈值")
         if name != "train":
             command.add_argument("--checkpoint", type=Path, required=True, help="本项目训练的 model.ckpt")
         if name == "predict":

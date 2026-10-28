@@ -40,7 +40,13 @@ class Workspace:
                     FOREIGN KEY (tool_type, specimen_id)
                         REFERENCES specimens(tool_type, specimen_id)
                 );
+                CREATE TABLE IF NOT EXISTS recipes (
+                    tool_type TEXT NOT NULL, view TEXT NOT NULL,
+                    roi TEXT, PRIMARY KEY (tool_type, view)
+                );
             """)
+            if "view" not in {row["name"] for row in db.execute("PRAGMA table_info(images)")}:
+                db.execute("ALTER TABLE images ADD COLUMN view TEXT NOT NULL DEFAULT 'top'")
 
     @contextmanager
     def connect(self):
@@ -84,7 +90,8 @@ class Workspace:
         if not existing:
             self.save_specimen(tool_type, specimen_id, quality, "unassigned", "")
 
-    def add_image(self, path, tool_type, specimen_id):
+    def add_image(self, path, tool_type, specimen_id, view="top"):
+        component(view)
         path = Path(path).resolve()
         if not path.is_relative_to(self.root / "data/raw"):
             raise ValueError("图片必须位于 data/raw 内")
@@ -100,8 +107,8 @@ class Workspace:
                 return existing["id"], False
             image_id = uuid4().hex
             db.execute(
-                "INSERT INTO images (id,path,tool_type,specimen_id,width,height,created_at) VALUES (?,?,?,?,?,?,?)",
-                (image_id, path.relative_to(self.root).as_posix(), tool_type, specimen_id, width, height, created_at),
+                "INSERT INTO images (id,path,tool_type,specimen_id,width,height,created_at,view) VALUES (?,?,?,?,?,?,?,?)",
+                (image_id, path.relative_to(self.root).as_posix(), tool_type, specimen_id, width, height, created_at, view),
             )
         return image_id, True
 
@@ -110,9 +117,10 @@ class Workspace:
         imported = 0
         for path in sorted(directory.rglob("*")):
             parts = path.relative_to(directory).parts
-            if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES or len(parts) != 3:
+            if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES or len(parts) not in {3, 4}:
                 continue
-            tool_type, specimen_id, _ = parts
+            tool_type, specimen_id = parts[:2]
+            view = parts[2] if len(parts) == 4 else "top"
             with self.connect() as db:
                 exists = db.execute(
                     "SELECT 1 FROM specimens WHERE tool_type=? AND specimen_id=?", (tool_type, specimen_id)
@@ -120,7 +128,7 @@ class Workspace:
             if not exists:
                 quality = "good" if specimen_id.startswith("good_") else "defect" if specimen_id.startswith("bad_") else "unknown"
                 self.ensure_specimen(tool_type, specimen_id, quality)
-            _, added = self.add_image(path, tool_type, specimen_id)
+            _, added = self.add_image(path, tool_type, specimen_id, view)
             imported += added
         return imported
 
@@ -163,14 +171,33 @@ class Workspace:
         with self.connect() as db:
             db.execute("UPDATE images SET included=?,boxes=? WHERE id=?", (included, json.dumps(boxes, ensure_ascii=False), image_id))
 
-    def plan(self, tool_type, model):
+    def recipe(self, tool_type, view):
         component(tool_type)
+        component(view)
+        with self.connect() as db:
+            row = db.execute("SELECT roi FROM recipes WHERE tool_type=? AND view=?", (tool_type, view)).fetchone()
+        return {"tool_type": tool_type, "view": view, "roi": json.loads(row["roi"]) if row and row["roi"] else None}
+
+    def save_recipe(self, tool_type, view, roi):
+        self.recipe(tool_type, view)
+        if roi is not None:
+            left, top, right, bottom = roi
+            if not (0 <= left < right and 0 <= top < bottom):
+                raise ValueError("检测区域坐标无效")
+        with self.connect() as db:
+            db.execute("INSERT INTO recipes VALUES (?,?,?) ON CONFLICT(tool_type,view) DO UPDATE SET roi=excluded.roi",
+                       (tool_type, view, json.dumps(roi)))
+
+    def plan(self, tool_type, model, view="top", experimental=False):
+        component(tool_type)
+        component(view)
         if model not in {"patchcore", "classifier"}:
             raise ValueError("未知模型")
-        selected = [item for item in self.state()["images"] if item["tool_type"] == tool_type and item["included"]]
+        selected = [item for item in self.state()["images"]
+                    if item["tool_type"] == tool_type and item["view"] == view and item["included"]]
         issues = []
         pending = [item for item in selected if item["quality"] == "unknown" or item["split"] == "unassigned"]
-        if pending:
+        if pending and not experimental:
             issues.append(f"有 {len(pending)} 张已选图片尚未确定好坏或实体分组")
         images = [item for item in selected if item not in pending]
         counts = {split: {"good": 0, "defect": 0, "specimens": 0} for split in ("train", "val", "test")}
@@ -179,11 +206,18 @@ class Workspace:
             count["specimens"] = len({item["specimen_id"] for item in rows})
             for quality in ("good", "defect"):
                 count[quality] = sum(item["quality"] == quality for item in rows)
+        if experimental and model != "patchcore":
+            raise ValueError("实验建库适用于 PatchCore")
         if model == "patchcore":
-            for split, quality, title in (("train", "good", "训练集正常图"), ("val", "good", "验证集正常图"), ("val", "defect", "验证集缺陷图")):
+            requirements = [("train", "good", "训练集正常图")]
+            if not experimental:
+                requirements += [("val", "good", "验证集正常图"), ("val", "defect", "验证集缺陷图")]
+            for split, quality, title in requirements:
                 if not counts[split][quality]:
                     issues.append(f"缺少{title}")
             images = [item for item in images if not (item["split"] == "train" and item["quality"] == "defect")]
+            if experimental:
+                images = [item for item in images if item["split"] == "train" and item["quality"] == "good"]
         else:
             images = [item for item in images if item["quality"] == "defect"]
             if any(not item["category"] for item in images):
@@ -197,6 +231,8 @@ class Workspace:
                     issues.append(f"{split} 缺陷类别必须与训练集一致，且每类需要不同实体")
         if not selected:
             issues.insert(0, "尚未选入图片，请先在图片库审核并勾选“用于数据集”")
+        if len({(item["width"], item["height"]) for item in images}) > 1:
+            issues.append("同一型号和拍摄面的训练图片需要保持相同原图尺寸")
         return {"ready": not issues, "issues": issues, "counts": counts, "images": images}
 
     def export(self, plan, output, roi):

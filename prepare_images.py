@@ -31,7 +31,7 @@ def check_prepared_images(directory):
 def prepare_image(image, roi, size):
     if size <= 0:
         raise ValueError("输出边长必须大于 0")
-    image = ImageOps.exif_transpose(image).convert("RGB")
+    image = ImageOps.grayscale(ImageOps.exif_transpose(image)).convert("RGB")
     if roi is not None:
         left, top, right, bottom = roi
         if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):

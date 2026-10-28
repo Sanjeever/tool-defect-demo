@@ -140,13 +140,23 @@ uv run python prepare_images.py --source data/raw/anomaly --output data/anomaly-
 ```
 
 右、下边界不包含在裁剪结果中。图片统一转换成三通道 RGB，灰度图复制为三个相同通道；
-等比例缩放后用黑色补边为 256×256，保留输入目录结构。原图不会被覆盖，已存在的输出图片也不会覆盖。
+统一转换为灰度后三通道，等比例缩放后用黑色补边为 256×256，保留输入目录结构。原图不会被覆盖，已存在的输出图片也不会覆盖。
 变更 ROI 后使用新的数据输出目录，并重新训练。
 
 当前模型入口要求输入为已处理的 256×256 图片。这个尺寸用于跑通流程，是否足以保留细小缺陷需要实图验证。
 训练、验证、测试和新图检测必须使用同样的 ROI 与预处理设置。
 
 ## 2. 训练并验证 PatchCore
+
+只有一件正常实物时，可先做未校准实验建库：
+
+```powershell
+uv run python anomaly.py train --data data/anomaly --output outputs/patchcore-experiment --experimental
+```
+
+该模式仅读取 `train/good`，输出原始异常分数，检测标签为“未校准”，不能用于正式正常／异常判断。
+实验热力图按每张图片的数值范围显示颜色，跨图颜色深浅不能直接比较。
+补充独立实物验证数据后，使用下面的正式训练命令重新建模和校准。
 
 ```powershell
 uv run python anomaly.py train --data data/anomaly --output outputs/patchcore

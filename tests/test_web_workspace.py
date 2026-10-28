@@ -102,6 +102,21 @@ class WorkspaceTests(unittest.TestCase):
         self.add_image("bad_04", "defect", "val", category="裂纹")
         self.assertTrue(self.workspace.plan("type_01", "classifier")["ready"])
 
+    def test_experimental_bank_contains_only_normal_training_images(self):
+        self.add_image("good_01", "good", "train")
+        self.add_image("bad_01", "defect", "unassigned")
+        plan = self.workspace.plan("type_01", "patchcore", experimental=True)
+        self.assertTrue(plan["ready"])
+        self.assertEqual([(item["specimen_id"], item["split"]) for item in plan["images"]], [("good_01", "train")])
+        self.assertFalse(self.workspace.plan("type_01", "patchcore")["ready"])
+        self.assertFalse(self.workspace.plan("type_01", "patchcore", view="side", experimental=True)["ready"])
+
+    def test_recipe_persists_without_changing_another_view(self):
+        self.workspace.save_recipe("type_01", "top", [1, 2, 30, 40])
+        reopened = Workspace(self.root)
+        self.assertEqual(reopened.recipe("type_01", "top")["roi"], [1, 2, 30, 40])
+        self.assertIsNone(reopened.recipe("type_01", "side")["roi"])
+
     def test_api_blocks_incomplete_data_and_cross_origin_camera_requests(self):
         self.add_image("good_01", "good", "train")
         self.add_image("bad_01", "defect", "val")
