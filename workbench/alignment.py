@@ -73,7 +73,7 @@ def align(image, reference=None, size=512):
     }
 
 
-def transform_boxes(boxes, matrix, size):
+def transform_boxes(boxes, matrix, size, strict=True):
     matrix = np.asarray(matrix, dtype=np.float64)
     transformed = []
     for box in boxes:
@@ -82,7 +82,9 @@ def transform_boxes(boxes, matrix, size):
         left, top = np.maximum(corners.min(axis=0), 0)
         right, bottom = np.minimum(corners.max(axis=0), size)
         if right <= left or bottom <= top:
-            raise ValueError("缺陷框位于刀具裁剪区域之外，请检查标注或定位结果")
+            if strict:
+                raise ValueError("缺陷框位于刀具裁剪区域之外，请检查标注或定位结果")
+            continue
         transformed.append({**box, "x": float(left), "y": float(top), "width": float(right - left), "height": float(bottom - top)})
     return transformed
 
@@ -90,5 +92,5 @@ def transform_boxes(boxes, matrix, size):
 def source_boxes(boxes, metadata):
     inverse = cv2.invertAffineTransform(np.asarray(metadata["matrix"], dtype=np.float64))
     size = metadata["source_size"]
-    result = transform_boxes(boxes, inverse, np.array(size))
+    result = transform_boxes(boxes, inverse, np.array(size), strict=False)
     return result

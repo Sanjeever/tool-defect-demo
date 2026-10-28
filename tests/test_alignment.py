@@ -37,3 +37,10 @@ class AlignmentTests(unittest.TestCase):
             align(image)
         with self.assertRaisesRegex(ValueError, "边界"):
             align(self.tool().crop((240, 0, 600, 500)))
+
+    def test_padding_predictions_are_removed_but_invalid_annotations_fail(self):
+        box = {"x": 0, "y": 0, "width": 10, "height": 10, "label": "划痕", "confidence": 0.8}
+        metadata = {"matrix": [[1, 0, 100], [0, 1, 100]], "source_size": [200, 200]}
+        self.assertEqual(source_boxes([box], metadata), [])
+        with self.assertRaises(ValueError):
+            transform_boxes([box], [[1, 0, -100], [0, 1, -100]], 512)
