@@ -9,7 +9,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
@@ -186,6 +186,25 @@ def create_app(root=ROOT):
         output = BytesIO()
         camera.capture().save(output, format="PNG")
         return Response(output.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/camera/live")
+    def live_preview():
+        if not camera.status()["connected"]:
+            raise ValueError("请先连接相机")
+
+        def frames():
+            sequence = 0
+            while camera.status()["connected"]:
+                try:
+                    sequence, jpeg = camera.next_preview(sequence)
+                except ValueError:
+                    if not camera.status()["connected"]:
+                        break
+                    raise
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     @app.post("/api/camera/capture")
     def capture(settings: CaptureSettings):

@@ -176,6 +176,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertFalse(item["included"])
             self.assertEqual(client.get(f"/api/images/{item['id']}/file").status_code, 200)
             self.assertEqual(client.post("/api/camera/preview").status_code, 422)
+            self.assertEqual(client.get("/api/camera/live").status_code, 422)
             sdk.assert_not_called()
 
     def write_model_job(self, job_id="model", experimental=True, view="top"):
