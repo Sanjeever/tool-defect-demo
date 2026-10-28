@@ -34,7 +34,8 @@ def train(args):
     data = make_data(args)
     model = make_model(data.label_info)
     engine = create_engine(model=model, data=data, work_dir=args.output, device="gpu" if args.device == "cuda" else "cpu")
-    callback = ModelCheckpoint(dirpath=args.output, filename="weights", monitor=None, save_top_k=1)
+    callback = ModelCheckpoint(dirpath=args.output, filename="weights", monitor=None, save_top_k=1,
+                               save_on_train_epoch_end=True)
     metrics = engine.train(max_epochs=args.epochs, seed=42, precision="32-true", logger=CSVLogger(args.output / "logs"), callbacks=[callback],
                  limit_val_batches=0 if args.experimental else 1.0, num_sanity_val_steps=0)
     shutil.copy2(engine.checkpoint, args.output / "model.ckpt")
