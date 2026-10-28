@@ -1,15 +1,19 @@
 import argparse
+from functools import partial
 import json
 from pathlib import Path
 import shutil
 
 
 def make_model(labels):
+    from torch.optim import SGD
     from getitune.backend.lightning.models.detection.yolox import YOLOX
-    from getitune.backend.lightning.models.base import DataInputParams
+    from getitune.backend.lightning.models.base import DataInputParams, DefaultSchedulerCallable
 
     return YOLOX(label_info=labels, model_name="yolox_tiny", data_input_params=DataInputParams(
-        input_size=(512, 512), mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)))
+        input_size=(512, 512), mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        optimizer=partial(SGD, lr=0.0002, momentum=0.9, weight_decay=0.0001),
+        scheduler=partial(DefaultSchedulerCallable, factor=1.0, total_iters=0))
 
 
 def make_data(args):
@@ -42,6 +46,8 @@ def train(args):
     (args.output / "model.json").write_text(json.dumps({
         "labels": data.label_info.label_names, "experimental": args.experimental,
         "engine": "getitune", "version": "0.1.3", "architecture": "yolox_tiny", "input_size": 512,
+        "optimizer": {"name": "SGD", "lr": 0.0002, "momentum": 0.9, "weight_decay": 0.0001},
+        "scheduler": "constant",
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     (args.output / "metrics.json").write_text(json.dumps({"scope": "训练过程" if args.experimental else "训练与验证",
         "values": metrics}, ensure_ascii=False, default=lambda value: value.tolist()), encoding="utf-8")
