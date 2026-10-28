@@ -55,10 +55,10 @@ export default function Models({ tool, view, data, jobs, busy, run }: PageProps)
           onPress={() => void run(saveRegion)}>保存区域</Button></div>
       </div>
       <section className="panel training-form"><h2>训练配置</h2>
-        <label className="field">训练方式<select value={mode} onChange={e => setMode(e.target.value)}>
+        <label className="field">训练方式<select aria-label="训练方式" value={mode} onChange={e => setMode(e.target.value)}>
           <option value="experiment">PatchCore · 未校准实验</option><option value="calibrated">PatchCore · 阈值校准</option><option value="classifier">YOLO · 缺陷分类</option>
         </select></label>
-        <label className="field">运行设备<select value={device} onChange={e => setDevice(e.target.value)}><option value="cuda">GPU · CUDA</option><option value="cpu">CPU</option></select></label>
+        <label className="field">运行设备<select aria-label="运行设备" value={device} onChange={e => setDevice(e.target.value)}><option value="cuda">GPU · CUDA</option><option value="cpu">CPU</option></select></label>
         <div className="form-row"><label className="field">批量大小<input type="number" min="1" max="64" value={batch} onChange={e => setBatch(Number(e.target.value))} /></label>
           {model === 'classifier' && <label className="field">训练轮数<input type="number" min="1" max="1000" value={epochs} onChange={e => setEpochs(Number(e.target.value))} /></label>}</div>
         <div className="data-summary"><table><thead><tr><th>分组</th><th>实物</th><th>好件图</th><th>坏件图</th></tr></thead><tbody>

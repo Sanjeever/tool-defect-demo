@@ -44,12 +44,12 @@ export default function Detect({ tool, view, data, jobs, camera, busy, run }: Pa
 
   return <>
     <section className="panel detection-controls">
-      <div className="detect-models"><label className="field">异常模型<select value={anomaly?.id ?? ''} onChange={e => setAnomalyId(e.target.value)}>
+      <div className="detect-models"><label className="field">异常模型<select aria-label="异常模型" value={anomaly?.id ?? ''} onChange={e => setAnomalyId(e.target.value)}>
         {!anomalies.length && <option value="">暂无已训练模型</option>}{anomalies.map(item => <option key={item.id} value={item.id}>{jobTitle(item)}</option>)}
-      </select></label><label className="field">缺陷分类模型<select disabled={!anomaly || anomaly.experimental} value={classificationJob ?? ''} onChange={e => setClassifier(e.target.value)}>
+      </select></label><label className="field">缺陷分类模型<select aria-label="缺陷分类模型" disabled={!anomaly || anomaly.experimental} value={classificationJob ?? ''} onChange={e => setClassifier(e.target.value)}>
         <option value="">不分类</option>{compatible.map(item => <option key={item.id} value={item.id}>{jobTitle(item)}</option>)}
       </select></label></div>
-      <div className="detection-actions"><label className="field sample-select">样本图片<select value={sample} onChange={e => setSample(e.target.value)}><option value="">选择样本</option>
+      <div className="detection-actions"><label className="field sample-select">样本图片<select aria-label="样本图片" value={sample} onChange={e => setSample(e.target.value)}><option value="">选择样本</option>
         {samples.map(item => <option key={item.id} value={item.id}>{item.specimen_id} · {item.path.split('/').at(-1)}</option>)}</select></label>
         <Button variant="outline" isDisabled={!ready || !sample} onPress={() => void detect(false)}><ScanLine size={16} />检测样本</Button>
         <Button variant="outline" isDisabled={!ready} onPress={() => upload.current?.click()}><FileImage size={16} />导入检测</Button>
@@ -57,7 +57,7 @@ export default function Detect({ tool, view, data, jobs, camera, busy, run }: Pa
         <input ref={upload} hidden type="file" accept="image/png,image/jpeg,image/bmp,image/tiff" aria-label="导入待检测图片"
           onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void detectFile(file) }} />
       </div>
-      <details className="advanced"><summary>运行设置</summary><div className="form-row"><label className="field">运行设备<select value={device} onChange={e => setDevice(e.target.value)}><option value="cuda">GPU · CUDA</option><option value="cpu">CPU</option></select></label>
+      <details className="advanced"><summary>运行设置</summary><div className="form-row"><label className="field">运行设备<select aria-label="运行设备" value={device} onChange={e => setDevice(e.target.value)}><option value="cuda">GPU · CUDA</option><option value="cpu">CPU</option></select></label>
         <label className="field">分类置信度门槛<input type="number" min="0" max="1" step="0.05" value={confidence} onChange={e => setConfidence(Number(e.target.value))} /></label></div></details>
       {anomaly?.experimental && <p className="model-note">当前模型未校准，输出原始异常分数。热力图颜色按单张图缩放，不用于合格判断。</p>}
     </section>
@@ -72,7 +72,7 @@ export default function Detect({ tool, view, data, jobs, camera, busy, run }: Pa
         <a className="text-link" href={artifact(job.id, 'result.json')} target="_blank" rel="noreferrer">结果 JSON</a></div>
         <div className="result-images">{[['source.png', '原图'], ['input.png', '模型输入'], ['predictions/input.heatmap.png', '异常热力图']].map(([name, title]) => <figure key={name}>
           <div><img src={artifact(job.id, name)} alt={title} /></div><figcaption>{title}</figcaption></figure>)}</div>
-        <div className="review-form"><label className="field">人工复核<select value={review} onChange={e => setReview(e.target.value as Quality)}>{Object.entries(qualities).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
+        <div className="review-form"><label className="field">人工复核<select aria-label="人工复核" value={review} onChange={e => setReview(e.target.value as Quality)}>{Object.entries(qualities).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
           <label className="field review-note">备注<input value={note} maxLength={500} onChange={e => setNote(e.target.value)} /></label>
           <Button variant="outline" isDisabled={busy || (review === (job.review?.quality ?? 'unknown') && note === (job.review?.note ?? ''))}
             onPress={() => void run(() => api(`/api/jobs/${job.id}/review`, 'POST', { quality: review, note }))}>保存复核</Button></div>

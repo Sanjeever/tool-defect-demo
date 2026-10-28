@@ -2,9 +2,11 @@ import argparse
 from contextlib import asynccontextmanager
 from datetime import datetime
 from io import BytesIO
+import json
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
+from zipfile import ZipFile
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -264,7 +266,10 @@ def create_app(root=ROOT):
         job = jobs.get(job_id)
         if job.get("kind") != "detect" or job["status"] != "succeeded":
             raise ValueError("请选择已完成的检测结果")
-        jobs.update(job_id, review={**settings.model_dump(), "at": datetime.now().isoformat(timespec="seconds")})
+        review = {**settings.model_dump(), "at": datetime.now().isoformat(timespec="seconds")}
+        jobs.update(job_id, review=review)
+        (jobs.root / job_id / "result.json").write_text(
+            json.dumps({**job["result"], "review": review}, ensure_ascii=False, indent=2), encoding="utf-8")
         return jobs.get(job_id)
 
     @app.get("/api/jobs/{job_id}/log")
@@ -285,6 +290,19 @@ def create_app(root=ROOT):
     @app.get("/api/jobs/{job_id}/artifact")
     def artifact(job_id: str, name: str):
         job = jobs.get(job_id)
+        if name == "model.zip":
+            jobs.model(job_id, job["model"])
+            path = jobs.root / job_id / name
+            with jobs.lock:
+                if not path.exists():
+                    checkpoint = jobs.root / job_id / job["checkpoint"]
+                    with ZipFile(path, "w") as archive:
+                        archive.write(checkpoint, checkpoint.name)
+                        metadata = checkpoint.with_name("model.json")
+                        if metadata.exists():
+                            archive.write(metadata, metadata.name)
+                        archive.write(jobs.root / job_id / "manifest.json", "manifest.json")
+            return FileResponse(path, filename=f"{job_id}-{job['model']}.zip")
         if name not in {"manifest.json", "run.log", "source.png", "input.png", "predictions/input.heatmap.png", "result.json", job["checkpoint"]}:
             raise FileNotFoundError("文件不存在")
         path = jobs.root / job_id / name

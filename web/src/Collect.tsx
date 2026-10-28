@@ -74,7 +74,7 @@ export default function Collect({ tool, view, data, camera, busy, run }: PagePro
           const existing = specimens.find(s => s.specimen_id === e.target.value)
           if (existing) setQuality(existing.quality)
         }} /><datalist id="specimen-ids">{specimens.map(s => <option key={s.specimen_id} value={s.specimen_id} />)}</datalist></label>
-        <label className="field">好坏标签<select value={quality} onChange={e => setQuality(e.target.value as Quality)}>
+        <label className="field">好坏标签<select aria-label="好坏标签" value={quality} onChange={e => setQuality(e.target.value as Quality)}>
           {Object.entries(qualities).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
         <div className="form-spacer" />
         <Button fullWidth isDisabled={!camera.connected || busy || !specimen.trim()} onPress={() => void capture()}><Camera size={16} />拍照保存</Button>

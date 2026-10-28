@@ -26,7 +26,7 @@ export default function JobLog({ job, busy, run }: { job?: Job; busy: boolean; r
     <span className={`status status-${job.status}`}>{statuses[job.status] ?? job.status}</span><span className="muted text-xs">{job.status === 'running' ? phases[job.phase] : ''}</span></div>
     <div className="flex items-center gap-3">
       <a className="text-link" href={artifact(job.id, 'manifest.json')} target="_blank" rel="noreferrer">数据清单</a>
-      {job.checkpoint && <a className="text-link" href={artifact(job.id, job.checkpoint)}>下载模型</a>}
+      {job.checkpoint && <a className="text-link" href={artifact(job.id, 'model.zip')}>下载模型</a>}
       {['running', 'stopping'].includes(job.status) && <Button variant="danger-soft" size="sm" isDisabled={busy || job.status === 'stopping'}
         onPress={() => void run(() => api(`/api/jobs/${job.id}/stop`, 'POST'))}>停止任务</Button>}
     </div></div>

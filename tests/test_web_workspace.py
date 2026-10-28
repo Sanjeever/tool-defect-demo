@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -181,6 +182,8 @@ class WorkspaceTests(unittest.TestCase):
         directory = self.root / "outputs/web/jobs" / job_id
         directory.mkdir(parents=True)
         (directory / "model.ckpt").write_bytes(b"model-boundary-fixture")
+        (directory / "model.json").write_text(json.dumps({"experimental": experimental}), encoding="utf-8")
+        (directory / "manifest.json").write_text("{}", encoding="utf-8")
         job = {"id": job_id, "kind": "train", "status": "succeeded", "model": "patchcore", "tool_type": "type_01",
                "view": view, "experimental": experimental, "checkpoint": "model.ckpt", "created_at": "2026-10-28",
                "settings": {"tool_type": "type_01", "view": view, "experimental": experimental, "model": "patchcore",
@@ -207,8 +210,19 @@ class WorkspaceTests(unittest.TestCase):
             response = client.post("/api/jobs/result/review", json={"quality": "defect", "note": "人工确认"})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["result"], job["result"])
+            exported = client.get("/api/jobs/result/artifact", params={"name": "result.json"}).json()
+            self.assertEqual(exported["review"]["note"], "人工确认")
         with TestClient(create_app(self.root)) as client:
             self.assertEqual(client.get("/api/jobs").json()[0]["review"]["quality"], "defect")
+
+    def test_model_download_includes_experimental_metadata(self):
+        self.write_model_job()
+        with TestClient(create_app(self.root)) as client:
+            response = client.get("/api/jobs/model/artifact", params={"name": "model.zip"})
+            self.assertEqual(response.status_code, 200)
+            with ZipFile(BytesIO(response.content)) as archive:
+                self.assertEqual(set(archive.namelist()), {"model.ckpt", "model.json", "manifest.json"})
+                self.assertTrue(json.loads(archive.read("model.json"))["experimental"])
 
 
 if __name__ == "__main__":
