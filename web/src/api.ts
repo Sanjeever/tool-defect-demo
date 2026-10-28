@@ -8,7 +8,7 @@ export interface Sample extends Specimen {
   id: string; path: string; width: number; height: number; included: boolean; view: string; created_at: string
 }
 export interface Workspace { specimens: Specimen[]; images: Sample[] }
-export interface Camera { connected: boolean; sn: string | null }
+export interface Camera { connected: boolean; sn: string | null; fps?: number; size?: number[]; error?: string }
 export interface Job {
   id: string; kind?: 'train' | 'detect'; status: string; phase: string; created_at: string
   tool_type: string; view: string; model: 'patchcore' | 'classifier'; experimental: boolean
@@ -22,8 +22,10 @@ export interface Plan {
   counts: Record<'train' | 'val' | 'test', { good: number; defect: number; specimens: number }>
 }
 export type Run = (action: () => Promise<unknown>) => Promise<void>
+export type Page = 'collect' | 'review' | 'models' | 'detect'
 export interface PageProps {
   tool: string; view: string; data: Workspace; jobs: Job[]; camera: Camera; busy: boolean; run: Run
+  navigate: (page: Page) => void
 }
 export const qualities = { unknown: '待确认', good: '好件', defect: '坏件' }
 export const splits = { unassigned: '未分组', train: '训练', val: '验证', test: '测试' }
