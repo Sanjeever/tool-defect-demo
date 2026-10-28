@@ -241,10 +241,13 @@ class Workspace:
             if experimental:
                 images = [item for item in images if item["split"] == "train" and item["quality"] == "good"]
         else:
+            classes = {box["label"] for item in images if item["split"] == "train" for box in item["boxes"]}
             if not any(item["split"] == "train" and item["boxes"] for item in images):
                 issues.append("缺少已完成缺陷框标注的训练图片")
             if not experimental and not any(item["split"] == "val" and item["boxes"] for item in images):
                 issues.append("缺少独立验证实物的缺陷框图片")
+            if not experimental and any(box["label"] not in classes for item in images if item["split"] != "train" for box in item["boxes"]):
+                issues.append("验证或测试组包含训练组未出现的缺陷类别")
             if experimental:
                 images = [item for item in images if item["split"] == "train"]
         if not any(item["split"] == "train" and item["quality"] == "good" for item in images):
@@ -260,8 +263,9 @@ class Workspace:
         with Image.open(self.root / reference_item["path"]) as image:
             reference, _ = align(image)
         reference.save(output / "reference.png")
+        labels = [label for label in DEFECT_LABELS if any(box["label"] == label for item in plan["images"] if item["split"] == "train" for box in item["boxes"])]
         datasets = {split: {"images": [], "annotations": [], "categories": [
-            {"id": index + 1, "name": label} for index, label in enumerate(DEFECT_LABELS)
+            {"id": index + 1, "name": label} for index, label in enumerate(labels)
         ]} for split in ("train", "val", "test")}
         transforms = {}
         for item in plan["images"]:
@@ -281,7 +285,7 @@ class Workspace:
                 dataset["images"].append({"id": image_index, "file_name": f"{item['id']}.png", "width": 512, "height": 512})
                 for box in transform_boxes(item["boxes"], metadata["matrix"], 512):
                     dataset["annotations"].append({"id": len(dataset["annotations"]) + 1, "image_id": image_index,
-                        "category_id": DEFECT_LABELS.index(box["label"]) + 1, "bbox": [box[key] for key in ("x", "y", "width", "height")],
+                        "category_id": labels.index(box["label"]) + 1, "bbox": [box[key] for key in ("x", "y", "width", "height")],
                         "area": box["width"] * box["height"], "iscrowd": 0})
         if plan["model"] == "detector":
             annotations = output / "prepared/annotations"

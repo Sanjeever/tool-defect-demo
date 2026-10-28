@@ -120,11 +120,6 @@ def predict(args):
         raise FileExistsError(f"结果已存在，请指定新的 --output：{result_path}")
     model = load_model(args.checkpoint)
     engine = make_engine(args.device, args.output)
-    classifier = None
-    if args.classifier is not None:
-        from .classifier import load_classifier
-
-        classifier = load_classifier(args.classifier)
     predictions = engine.predict(model=model, dataset=PredictDataset(path=args.source.resolve()))
     args.output.mkdir(parents=True, exist_ok=True)
     with result_path.open("w", encoding="utf-8") as output:
@@ -137,11 +132,8 @@ def predict(args):
                     "label": "未校准" if anomalous is None else "异常" if anomalous else "正常",
                     "anomaly_score": float(batch.pred_score[index].item()),
                 }
-                if anomalous and classifier is not None:
-                    from .classifier import classify_image
-
-                    result["classification"] = classify_image(classifier, path, args.device, args.min_confidence)
                 anomaly_map = batch.anomaly_map[index].detach().cpu().numpy().squeeze()
+                np.save(args.output / f"{path.stem}.map.npy", anomaly_map)
                 display_map = anomaly_map
                 if anomalous is None:
                     display_map = (anomaly_map - anomaly_map.min()) / max(float(np.ptp(anomaly_map)), 1e-8)
@@ -180,8 +172,6 @@ def main():
             command.add_argument("--checkpoint", type=Path, required=True, help="本项目训练的 model.ckpt")
         if name == "predict":
             command.add_argument("--source", type=Path, required=True, help="单张图片或图片目录")
-            command.add_argument("--classifier", type=Path, help="可选：已训练的 YOLO 分类权重，仅对异常图分类")
-            command.add_argument("--min-confidence", type=float, default=0.7, help="分类置信度低于此值时标记待复核，需用验证集调整")
     args = parser.parse_args()
     if hasattr(args, "batch_size") and args.batch_size <= 0:
         parser.error("--batch-size 必须大于 0")

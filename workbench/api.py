@@ -19,6 +19,8 @@ import uvicorn
 from .camera import DEFAULT_SDK_ROOT
 from .camera_session import CameraSession
 from .jobs import Jobs
+from .jobs import GETI_PROJECT
+from .alignment import VERSION, align
 from .store import Workspace, component
 
 
@@ -69,18 +71,18 @@ class RecipeSettings(BaseModel):
 
 
 class TrainSettings(RecipeSettings):
-    model: Literal["patchcore", "classifier"] = "patchcore"
-    experimental: bool = False
+    model: Literal["patchcore", "detector"] = "patchcore"
+    experimental: bool = True
     device: Literal["cuda", "cpu"] = "cuda"
     batch_size: int = Field(default=4, ge=1, le=64)
     epochs: int = Field(default=30, ge=1, le=1000)
 
 
 class DetectSettings(BaseModel):
-    anomaly_job: str
-    classifier_job: str | None = None
+    route_tool: str | None = None
+    route_view: Literal["top", "bottom"] | None = None
     device: Literal["cuda", "cpu"] = "cuda"
-    min_confidence: float = Field(default=0.7, ge=0, le=1)
+    min_confidence: float = Field(default=0.5, ge=0, le=1)
     image_id: str | None = None
     camera: bool = False
 
@@ -88,6 +90,16 @@ class DetectSettings(BaseModel):
 class ReviewSettings(BaseModel):
     quality: Literal["good", "defect", "unknown"]
     note: str = Field(default="", max_length=500)
+    boxes: list[DefectBox] = Field(default_factory=list)
+    tool_type: str | None = None
+    view: Literal["top", "bottom"] | None = None
+
+
+class SchemeSettings(BaseModel):
+    tool_type: str
+    view: Literal["top", "bottom"]
+    anomaly_job: str
+    detector_job: str | None = None
 
 
 def create_app(root=ROOT):
@@ -134,7 +146,7 @@ def create_app(root=ROOT):
 
     @app.get("/api/state")
     def state():
-        return workspace.state()
+        return {**workspace.state(), "geti_ready": (GETI_PROJECT / ".venv/Scripts/python.exe").is_file()}
 
     @app.post("/api/import")
     def import_images():
@@ -153,6 +165,14 @@ def create_app(root=ROOT):
     @app.get("/api/images/{image_id}/file")
     def image_file(image_id: str):
         return FileResponse(workspace.image_path(image_id))
+
+    @app.get("/api/images/{image_id}/aligned")
+    def aligned_image(image_id: str):
+        with Image.open(workspace.image_path(image_id)) as source:
+            prepared, _ = align(source)
+        output = BytesIO()
+        prepared.save(output, format="PNG")
+        return Response(output.getvalue(), media_type="image/png")
 
     async def uploaded_image(request):
         body = await request.body()
@@ -235,7 +255,7 @@ def create_app(root=ROOT):
         return workspace.recipe(settings.tool_type, settings.view)
 
     @app.get("/api/dataset")
-    def dataset(tool_type: str, model: Literal["patchcore", "classifier"] = "patchcore", view: str = "top", experimental: bool = False):
+    def dataset(tool_type: str, model: Literal["patchcore", "detector"] = "patchcore", view: str = "top", experimental: bool = True):
         plan = workspace.plan(tool_type, model, view, experimental)
         return {key: value for key, value in plan.items() if key != "images"}
 
@@ -245,40 +265,47 @@ def create_app(root=ROOT):
 
     @app.post("/api/jobs")
     def start_job(settings: TrainSettings):
+        if settings.view not in {"top", "bottom"}:
+            raise ValueError("请选择正面或背面")
+        if settings.model == "detector" and not (GETI_PROJECT / ".venv/Scripts/python.exe").is_file():
+            raise RuntimeError("Geti 环境尚未安装，请运行 uv sync --locked --project engines/geti")
         plan = workspace.plan(settings.tool_type, settings.model, settings.view, settings.experimental)
         if not plan["ready"]:
             raise ValueError("；".join(plan["issues"]))
-        if settings.roi is not None:
-            left, top, right, bottom = settings.roi
-            if any(not (0 <= left < right <= image["width"] and 0 <= top < bottom <= image["height"]) for image in plan["images"]):
-                raise ValueError("检测区域超出部分图片范围或尺寸无效")
         values = settings.model_dump(mode="json")
-        values["preprocessing"] = "gray-pad-256-v1"
-        values["source_size"] = [plan["images"][0]["width"], plan["images"][0]["height"]]
+        values["preprocessing"] = VERSION
         plan["model"] = settings.model
         return jobs.start("train", values, plan=plan)
 
+    @app.put("/api/schemes")
+    def save_scheme(settings: SchemeSettings):
+        for model_type, job_id in (("patchcore", settings.anomaly_job), ("detector", settings.detector_job)):
+            if job_id:
+                model = jobs.model(job_id, model_type)
+                if (model["tool_type"], model["view"]) != (settings.tool_type, settings.view):
+                    raise ValueError("模型类型和拍摄面与方案不匹配")
+        workspace.save_scheme(**settings.model_dump())
+        return {"saved": True}
+
     def detect(settings, image, source_item=None):
-        model = jobs.model(settings.anomaly_job, "patchcore")
-        if source_item and (source_item["tool_type"], source_item["view"]) != (model["tool_type"], model["view"]):
-            raise ValueError("图片型号或拍摄面与模型不匹配")
-        if list(image.size) != model["settings"]["source_size"]:
-            raise ValueError(f"图片尺寸与模型采集尺寸不一致，需要 {model['settings']['source_size']}")
-        if settings.classifier_job:
-            if model["experimental"]:
-                raise ValueError("未校准模型不触发缺陷分类")
-            classifier = jobs.model(settings.classifier_job, "classifier")
-            for field in ("tool_type", "view", "roi", "source_size", "preprocessing"):
-                if classifier["settings"][field] != model["settings"][field]:
-                    raise ValueError("分类模型与异常模型的型号、拍摄面或预处理设置不一致")
-        values = {**model["settings"], **settings.model_dump(mode="json")}
+        schemes = workspace.state()["schemes"]
+        if not schemes:
+            raise ValueError("请先在模型页启用至少一个检测方案")
+        if bool(settings.route_tool) != bool(settings.route_view):
+            raise ValueError("人工指定需要同时选择刀具类型和拍摄面")
+        for scheme in schemes:
+            jobs.model(scheme["anomaly_job"], "patchcore")
+            if scheme["detector_job"]:
+                jobs.model(scheme["detector_job"], "detector")
+        values = {**settings.model_dump(mode="json"), "model": "scheme", "schemes": schemes,
+                  "preprocessing": VERSION, "source_item": source_item,
+                  "camera_info": camera.status() if settings.camera else None}
         return jobs.start("detect", values, image=image)
 
     @app.post("/api/detections")
     def detect_image(settings: DetectSettings):
         if settings.camera == bool(settings.image_id):
             raise ValueError("请选择一张样本图片或相机拍照")
-        jobs.model(settings.anomaly_job, "patchcore")
         if settings.camera:
             return detect(settings, camera.capture())
         workspace.image_path(settings.image_id)
@@ -287,9 +314,9 @@ def create_app(root=ROOT):
             return detect(settings, image.copy(), item)
 
     @app.post("/api/detections/upload")
-    async def detect_upload(request: Request, anomaly_job: str, classifier_job: str | None = None,
-                            device: Literal["cuda", "cpu"] = "cuda", min_confidence: float = 0.7):
-        settings = DetectSettings(anomaly_job=anomaly_job, classifier_job=classifier_job, device=device, min_confidence=min_confidence)
+    async def detect_upload(request: Request, route_tool: str | None = None, route_view: Literal["top", "bottom"] | None = None,
+                            device: Literal["cuda", "cpu"] = "cuda", min_confidence: float = 0.5):
+        settings = DetectSettings(route_tool=route_tool, route_view=route_view, device=device, min_confidence=min_confidence)
         return detect(settings, await uploaded_image(request))
 
     @app.post("/api/jobs/{job_id}/review")
@@ -297,11 +324,37 @@ def create_app(root=ROOT):
         job = jobs.get(job_id)
         if job.get("kind") != "detect" or job["status"] != "succeeded":
             raise ValueError("请选择已完成的检测结果")
-        review = {**settings.model_dump(), "at": datetime.now().isoformat(timespec="seconds")}
-        jobs.update(job_id, review=review)
+        image_path = jobs.root / job_id / "source.png"
+        with Image.open(image_path) as image:
+            for box in settings.boxes:
+                if box.x + box.width > image.width or box.y + box.height > image.height:
+                    raise ValueError("复核缺陷框超出原图")
+        if settings.quality == "good" and settings.boxes:
+            raise ValueError("合格复核不能保留缺陷框")
+        review = {**settings.model_dump(mode="json"), "at": datetime.now().isoformat(timespec="seconds")}
+        reviews = [*job.get("reviews", []), review]
+        jobs.update(job_id, review=review, reviews=reviews)
         (jobs.root / job_id / "result.json").write_text(
-            json.dumps({**job["result"], "review": review}, ensure_ascii=False, indent=2), encoding="utf-8")
+            json.dumps({**job["result"], "review": review, "reviews": reviews}, ensure_ascii=False, indent=2), encoding="utf-8")
         return jobs.get(job_id)
+
+    @app.post("/api/jobs/{job_id}/adopt")
+    def adopt_detection(job_id: str, settings: CaptureSettings):
+        job = jobs.get(job_id)
+        if job["kind"] != "detect" or job["status"] != "succeeded" or not job.get("review"):
+            raise ValueError("请先完成人工复核")
+        if job.get("adopted_image"):
+            raise ValueError("该记录已加入样本")
+        review = job["review"]
+        if review["quality"] == "unknown" or (review["quality"] == "defect" and not review["boxes"]):
+            raise ValueError("请确认当前面好坏，并框出不合格区域")
+        if review.get("tool_type") != settings.tool_type or review.get("view") != settings.view:
+            raise ValueError("采纳类型和拍摄面应与人工复核一致")
+        with Image.open(jobs.root / job_id / "source.png") as source:
+            registered = register_image(source.copy(), settings)
+        workspace.update_image(registered["id"], included=True, quality=review["quality"], boxes=review["boxes"], annotated=True)
+        jobs.update(job_id, adopted_image=registered["id"])
+        return registered
 
     @app.get("/api/jobs/{job_id}/log")
     def job_log(job_id: str):
@@ -321,6 +374,15 @@ def create_app(root=ROOT):
     @app.get("/api/jobs/{job_id}/artifact")
     def artifact(job_id: str, name: str):
         job = jobs.get(job_id)
+        if name == "record.zip":
+            if job["kind"] != "detect" or job["status"] != "succeeded":
+                raise ValueError("请选择已完成的检测记录")
+            output = BytesIO()
+            with ZipFile(output, "w") as archive:
+                for entry in (jobs.root / job_id).iterdir():
+                    if entry.is_file() and entry.suffix in {".json", ".png", ".log"}:
+                        archive.write(entry, entry.name)
+            return Response(output.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{job_id}.zip"'})
         if name == "model.zip":
             jobs.model(job_id, job["model"])
             path = jobs.root / job_id / name
@@ -332,9 +394,11 @@ def create_app(root=ROOT):
                         metadata = checkpoint.with_name("model.json")
                         if metadata.exists():
                             archive.write(metadata, metadata.name)
+                        archive.write(jobs.root / job_id / "reference.png", "reference.png")
                         archive.write(jobs.root / job_id / "manifest.json", "manifest.json")
             return FileResponse(path, filename=f"{job_id}-{job['model']}.zip")
-        if name not in {"manifest.json", "run.log", "source.png", "input.png", "predictions/input.heatmap.png", "result.json", job["checkpoint"]}:
+        if name not in {"manifest.json", "run.log", "source.png", "input.png", "aligned.png", "heatmap.png", "reference.png",
+                        "transform.json", "detector-transform.json", "detector-input.png", "predictions/input.heatmap.png", "result.json", job["checkpoint"]}:
             raise FileNotFoundError("文件不存在")
         path = jobs.root / job_id / name
         if not path.is_file():

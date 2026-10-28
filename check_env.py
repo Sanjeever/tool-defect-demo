@@ -15,11 +15,10 @@ def main():
     import torchvision
     from anomalib.engine import Engine
     from anomalib.models import Patchcore
-    from ultralytics import YOLO
 
     versions = {
         name: importlib.metadata.version(name)
-        for name in ("anomalib", "ultralytics-opencv-headless", "numpy", "pillow")
+        for name in ("anomalib", "numpy", "pillow")
     }
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA 不可用，请检查驱动与 PyTorch 安装；需要 CPU 时显式指定 --device cpu")
@@ -34,7 +33,7 @@ def main():
         "CUDA 构建版本": torch.version.cuda,
         "运行设备": args.device,
         "矩阵运算结果": result,
-        "模型入口": [Engine.__name__, Patchcore.__name__, YOLO.__name__],
+        "模型入口": [Engine.__name__, Patchcore.__name__],
     }
     if args.device == "cuda":
         report["显卡"] = torch.cuda.get_device_name(0)

@@ -1,0 +1,23 @@
+[project]
+name = "tool-workbench-geti"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "getitune==0.1.3",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "opencv-python-headless==4.11.0.86",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+exclude-dependencies = ["opencv-python"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

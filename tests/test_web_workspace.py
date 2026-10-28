@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 
 from workbench.api import create_app
 from workbench.store import Workspace
+from workbench.alignment import VERSION
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -109,6 +110,23 @@ class WorkspaceTests(unittest.TestCase):
         self.add_image("good_01", "good", "train")
         self.assertTrue(self.workspace.plan("type_01", "detector")["ready"])
 
+    def test_coco_export_contains_negative_images_and_transformed_defects(self):
+        self.add_image("good_01", "good", "train")
+        self.add_image("bad_01", "defect", "train")
+        plan = self.workspace.plan("type_01", "detector", experimental=True)
+        self.assertTrue(plan["ready"])
+        plan["model"] = "detector"
+        output = self.root / "outputs/dataset"
+        self.workspace.export(plan, output)
+        annotations = json.loads((output / "prepared/annotations/instances_train.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(annotations["images"]), 2)
+        self.assertEqual(len(annotations["annotations"]), 1)
+        self.assertEqual([item["name"] for item in annotations["categories"]], ["缺角"])
+        box = annotations["annotations"][0]["bbox"]
+        self.assertTrue(0 <= box[0] < box[0] + box[2] <= 512)
+        self.assertTrue(0 <= box[1] < box[1] + box[3] <= 512)
+        self.assertTrue((output / "transforms.json").is_file())
+
     def test_experimental_bank_contains_only_normal_training_images(self):
         self.add_image("good_01", "good", "train")
         self.add_image("bad_01", "defect", "unassigned")
@@ -128,7 +146,7 @@ class WorkspaceTests(unittest.TestCase):
         self.add_image("good_01", "good", "train")
         self.add_image("bad_01", "defect", "val")
         with TestClient(create_app(self.root)) as client:
-            response = client.post("/api/jobs", json={"tool_type": "type_01"})
+            response = client.post("/api/jobs", json={"tool_type": "type_01", "experimental": False})
             self.assertEqual(response.status_code, 422)
             self.assertIn("验证集正常图", response.json()["detail"])
             self.assertEqual(client.get("/api/jobs").json(), [])
@@ -150,7 +168,7 @@ class WorkspaceTests(unittest.TestCase):
         self.ready_workspace()
         with TestClient(create_app(self.root)) as client:
             with patch("workbench.jobs.subprocess.Popen", side_effect=RuntimeError("外部训练进程启动失败")):
-                response = client.post("/api/jobs", json={"tool_type": "type_01"})
+                response = client.post("/api/jobs", json={"tool_type": "type_01", "experimental": False})
                 self.assertEqual(response.status_code, 200)
                 job_id = response.json()["id"]
                 deadline = time.monotonic() + 5
@@ -185,45 +203,51 @@ class WorkspaceTests(unittest.TestCase):
             sdk.assert_not_called()
 
     def write_model_job(self, job_id="model", experimental=True, view="top"):
-        directory = self.root / "outputs/web/jobs" / job_id
+        directory = self.root / "outputs/workbench/jobs" / job_id
         directory.mkdir(parents=True)
         (directory / "model.ckpt").write_bytes(b"model-boundary-fixture")
         (directory / "model.json").write_text(json.dumps({"experimental": experimental}), encoding="utf-8")
         (directory / "manifest.json").write_text("{}", encoding="utf-8")
+        Image.new("RGB", (512, 512)).save(directory / "reference.png")
         job = {"id": job_id, "kind": "train", "status": "succeeded", "model": "patchcore", "tool_type": "type_01",
                "view": view, "experimental": experimental, "checkpoint": "model.ckpt", "created_at": "2026-10-28",
                "settings": {"tool_type": "type_01", "view": view, "experimental": experimental, "model": "patchcore",
-                            "source_size": [60, 40], "roi": None, "preprocessing": "gray-pad-256-v1"}}
+                            "preprocessing": VERSION}}
         (directory / "job.json").write_text(json.dumps(job), encoding="utf-8")
 
-    def test_detection_rejects_wrong_view_and_experimental_classification(self):
+    def test_detection_requires_enabled_scheme_and_scheme_rejects_wrong_face(self):
         self.write_model_job(view="side")
         self.write_model_job(job_id="top_model")
         image_id = self.add_image("good_01", "good")
         with TestClient(create_app(self.root)) as client, patch("workbench.jobs.subprocess.Popen") as process:
             response = client.post("/api/detections", json={"anomaly_job": "model", "image_id": image_id})
             self.assertEqual(response.status_code, 422)
-            self.assertIn("拍摄面", response.json()["detail"])
+            self.assertIn("启用", response.json()["detail"])
             self.assertEqual(client.post("/api/detections", json={"anomaly_job": "model", "image_id": "missing"}).status_code, 404)
-            response = client.post("/api/detections", json={"anomaly_job": "top_model", "classifier_job": "model", "image_id": image_id})
+            response = client.put("/api/schemes", json={"tool_type": "type_01", "view": "top", "anomaly_job": "model"})
             self.assertEqual(response.status_code, 422)
-            self.assertIn("未校准", response.json()["detail"])
+            self.assertIn("拍摄面", response.json()["detail"])
             process.assert_not_called()
 
     def test_review_is_separate_from_model_result_and_survives_restart(self):
-        directory = self.root / "outputs/web/jobs/result"
+        directory = self.root / "outputs/workbench/jobs/result"
         directory.mkdir(parents=True)
         job = {"id": "result", "kind": "detect", "status": "succeeded", "checkpoint": None,
                "result": {"label": "未校准", "anomaly_score": 1.0}}
         (directory / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        Image.new("RGB", (60, 40)).save(directory / "source.png")
         with TestClient(create_app(self.root)) as client:
             response = client.post("/api/jobs/result/review", json={"quality": "defect", "note": "人工确认"})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["result"], job["result"])
             exported = client.get("/api/jobs/result/artifact", params={"name": "result.json"}).json()
             self.assertEqual(exported["review"]["note"], "人工确认")
+            client.post("/api/jobs/result/review", json={"quality": "good", "note": "修正判断"})
+            exported = client.get("/api/jobs/result/artifact", params={"name": "result.json"}).json()
+            self.assertEqual(len(exported["reviews"]), 2)
+            self.assertEqual(exported["label"], "未校准")
         with TestClient(create_app(self.root)) as client:
-            self.assertEqual(client.get("/api/jobs").json()[0]["review"]["quality"], "defect")
+            self.assertEqual(client.get("/api/jobs").json()[0]["review"]["quality"], "good")
 
     def test_model_download_includes_experimental_metadata(self):
         self.write_model_job()
@@ -231,7 +255,7 @@ class WorkspaceTests(unittest.TestCase):
             response = client.get("/api/jobs/model/artifact", params={"name": "model.zip"})
             self.assertEqual(response.status_code, 200)
             with ZipFile(BytesIO(response.content)) as archive:
-                self.assertEqual(set(archive.namelist()), {"model.ckpt", "model.json", "manifest.json"})
+                self.assertEqual(set(archive.namelist()), {"model.ckpt", "model.json", "manifest.json", "reference.png"})
                 self.assertTrue(json.loads(archive.read("model.json"))["experimental"])
 
     def test_live_preview_streams_jpeg_without_registering_samples(self):
