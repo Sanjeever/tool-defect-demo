@@ -11,6 +11,7 @@
   --focus: #147d64;
   --radius: 0.5rem;
 }
+html { scrollbar-gutter: stable; }
 body { margin: 0; min-width: 360px; }
 button, input, select { font: inherit; }
 button, a, summary, input[type="checkbox"] { -webkit-tap-highlight-color: transparent; }

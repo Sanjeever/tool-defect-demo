@@ -19,7 +19,7 @@ export default function RoiPicker({ sample, roi, onChange }: { sample?: Sample; 
     }} onPointerMove={event => { if (start.current) setDraft(rectangle(start.current, point(event))) }}
       onPointerUp={event => { if (!start.current) return; const next = rectangle(start.current, point(event)); start.current = null; setDraft(null); if (next[2] > next[0] && next[3] > next[1]) onChange(next) }}
       onPointerCancel={() => { start.current = null; setDraft(null) }}>
-      <img src={imageUrl(sample.id)} alt="检测区域参考图" draggable={false} />
+      <img src={imageUrl(sample.id)} width={sample.width} height={sample.height} alt="检测区域参考图" draggable={false} />
       {shown && <div className="roi-box" style={{ left: `${shown[0] / sample.width * 100}%`, top: `${shown[1] / sample.height * 100}%`, width: `${(shown[2] - shown[0]) / sample.width * 100}%`, height: `${(shown[3] - shown[1]) / sample.height * 100}%` }} />}
     </div> : <div className="stage-empty">暂无参考图片</div>}</div>
     <div className="roi-fields">{['左', '上', '右', '下'].map((label, index) => <label className="field" key={label}>{label}<input type="number" min="0" step="1" value={roi?.[index] ?? ''}
