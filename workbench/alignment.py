@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 
-VERSION = "single-tool-align-v1"
+VERSION = "single-tool-crop-v2"
 
 
 def locate(image, size=512):
@@ -62,14 +62,11 @@ def match_rotation(image, reference, background):
 
 def align(image, reference=None, size=512):
     normalized, matrix, bounds, background = locate(image, size)
-    score, angle = match_rotation(normalized, reference, background) if reference is not None else (None, 0)
-    rotation = cv2.getRotationMatrix2D(((size - 1) / 2, (size - 1) / 2), angle, 1)
-    matrix = (np.vstack((rotation, [0, 0, 1])) @ np.vstack((matrix, [0, 0, 1])))[:2]
-    source = np.asarray(ImageOps.grayscale(ImageOps.exif_transpose(image)))
-    result = cv2.warpAffine(source, matrix, (size, size), borderValue=background)
-    return Image.fromarray(result).convert("RGB"), {
+    score, recognition_angle = match_rotation(normalized, reference, background) if reference is not None else (None, 0)
+    return normalized, {
         "version": VERSION, "matrix": matrix.tolist(), "source_size": list(image.size),
-        "size": size, "bounds": bounds, "angle": angle, "similarity": score,
+        "size": size, "bounds": bounds, "angle": 0, "similarity": score,
+        "recognition_angle": recognition_angle,
     }
 
 
