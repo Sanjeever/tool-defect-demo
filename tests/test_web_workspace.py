@@ -229,6 +229,21 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual(set(archive.namelist()), {"model.ckpt", "model.json", "manifest.json"})
                 self.assertTrue(json.loads(archive.read("model.json"))["experimental"])
 
+    def test_live_preview_streams_jpeg_without_registering_samples(self):
+        output = BytesIO()
+        Image.new("L", (30, 20), 128).save(output, format="JPEG")
+        app = create_app(self.root)
+        with TestClient(app) as client:
+            with patch.object(app.state.camera, "status", side_effect=[{"connected": True}, {"connected": True}, {"connected": False}]), \
+                 patch.object(app.state.camera, "next_preview", return_value=(1, output.getvalue())) as frame:
+                response = client.get("/api/camera/live")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("multipart/x-mixed-replace", response.headers["content-type"])
+            self.assertIn(b"Content-Type: image/jpeg", response.content)
+            self.assertIn(output.getvalue(), response.content)
+            frame.assert_called_once_with(0)
+            self.assertEqual(client.get("/api/state").json()["images"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
