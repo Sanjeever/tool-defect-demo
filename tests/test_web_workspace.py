@@ -27,7 +27,7 @@ class WorkspaceTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("L", (60, 40), 128).save(path)
         image_id, _ = self.workspace.add_image(path, "type_01", specimen)
-        self.workspace.update_image(image_id, included, [])
+        self.workspace.update_image(image_id, included, [], quality=quality)
         return image_id
 
     def ready_workspace(self):
@@ -48,7 +48,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_annotations_round_trip_and_invalid_box_does_not_replace_saved_box(self):
         image_id = self.add_image("bad_01", "defect")
-        boxes = [{"x": 4, "y": 6, "width": 15, "height": 12, "label": "崩角"}]
+        boxes = [{"x": 4, "y": 6, "width": 15, "height": 12, "label": "缺角"}]
         self.workspace.update_image(image_id, True, boxes)
         reopened = Workspace(self.root)
         self.assertEqual(reopened.image(image_id)["boxes"], boxes)
@@ -64,7 +64,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.import_pilot(), 1)
         item = self.workspace.state()["images"][0]
         self.assertFalse(item["included"])
-        self.assertEqual(item["quality"], "defect")
+        self.assertEqual(item["quality"], "unknown")
+        self.assertEqual(item["specimen_quality"], "defect")
         self.workspace.update_image(item["id"], True, [])
         self.assertEqual(self.workspace.import_pilot(), 0)
         self.assertTrue(self.workspace.state()["images"][0]["included"])

@@ -47,7 +47,19 @@ class CaptureSettings(BaseModel):
 
 
 class ImageSettings(BaseModel):
-    included: bool
+    included: bool | None = None
+    quality: Literal["good", "defect", "unknown"] | None = None
+    annotated: bool | None = None
+    view: Literal["top", "bottom"] | None = None
+    boxes: list["DefectBox"] | None = None
+
+
+class DefectBox(BaseModel):
+    x: float = Field(ge=0, allow_inf_nan=False)
+    y: float = Field(ge=0, allow_inf_nan=False)
+    width: float = Field(gt=0, allow_inf_nan=False)
+    height: float = Field(gt=0, allow_inf_nan=False)
+    label: Literal["磨损", "缺角", "划痕", "氧化"]
 
 
 class RecipeSettings(BaseModel):
@@ -135,7 +147,7 @@ def create_app(root=ROOT):
 
     @app.patch("/api/images/{image_id}")
     def update_image(image_id: str, settings: ImageSettings):
-        workspace.update_image(image_id, settings.included, workspace.image(image_id)["boxes"])
+        workspace.update_image(image_id, **settings.model_dump(exclude_none=True))
         return {"saved": True}
 
     @app.get("/api/images/{image_id}/file")

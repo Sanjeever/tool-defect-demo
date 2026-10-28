@@ -80,6 +80,37 @@ main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 
 .page-content { flex: 1; min-width: 0; min-height: 0; display: grid; }
 .page-collect { grid-template-rows: minmax(0, 1fr) 40px; gap: 8px; }
 .page-review { grid-template-rows: auto minmax(0, 1fr) 40px; gap: 8px; }
+.page-review:has(.annotation-layout) { grid-template-rows: minmax(0, 1fr); }
+.annotation-layout { display: grid; grid-template-columns: 188px minmax(0, 1fr) 188px; gap: 10px; min-height: 0; }
+.annotation-library, .annotation-editor { display: flex; flex-direction: column; min-height: 0; }
+.library-filter { padding: 8px; }
+.annotation-thumbnails { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 5px; padding: 0 8px; }
+.annotation-thumb { min-height: 0; overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--color-border); border-radius: 4px; padding: 3px; background: var(--color-surface); text-align: left; font-size: 11px; }
+.annotation-thumb.selected { border-color: var(--color-positive); }
+.annotation-thumb img { width: 100%; flex: 1; min-height: 0; object-fit: contain; background: var(--color-preview); }
+.annotation-thumb small { color: var(--color-text-secondary); }
+.annotation-controls { display: flex; gap: 12px; padding: 8px 10px; flex-shrink: 0; }
+.annotation-controls label { display: flex; gap: 5px; align-items: center; white-space: nowrap; font-size: 12px; }
+.annotation-controls select { width: 90px; }
+.box-workspace { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.box-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #e9eceb; padding: 14px; }
+.box-image { position: relative; flex-shrink: 0; touch-action: none; user-select: none; }
+.box-image.editable { cursor: crosshair; }
+.box-image > img { width: 100%; height: 100%; display: block; pointer-events: none; }
+.defect-box { position: absolute; border: 2px solid #e17b27; pointer-events: none; }
+.defect-box.selected, .defect-box.draft { border-color: #007b64; }
+.defect-box > span { position: absolute; top: 0; left: 0; transform: translateY(-100%); white-space: nowrap; padding: 1px 4px; background: #873d0b; color: white; font-size: 11px; }
+.defect-box.selected > span { background: #007b64; }
+.annotation-boxes { min-height: 37px; padding: 5px 10px; display: grid; gap: 3px; flex-shrink: 0; }
+.annotation-box-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.annotation-box-row > button:first-child { border: 0; background: var(--color-surface-subtle); width: 24px; height: 26px; }
+.annotation-box-row.active > button:first-child { background: var(--color-positive-bg); }
+.annotation-box-row select { width: 90px; height: 26px; }
+.annotation-footer { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--color-border); padding: 5px 8px; }
+.annotation-footer .pager { border: 0; }
+.annotation-mobile { display: none; }
+@media (max-width: 1100px) { .annotation-layout { grid-template-columns: 170px minmax(0, 1fr); } .annotation-specimen { grid-column: 1; grid-row: 2; } .annotation-library { grid-row: 1; } .annotation-editor { grid-row: 1 / 3; grid-column: 2; } }
+@media (max-width: 700px) { .annotation-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); } .annotation-mobile { display: flex; grid-row: 1; } .annotation-editor, .annotation-library { grid-column: 1; grid-row: 2; } .annotation-specimen { display: none; } .annotation-pane-annotate .annotation-library, .annotation-pane-library .annotation-editor { display: none; } .annotation-controls { flex-wrap: wrap; gap: 4px; } }
 .panel { min-width: 0; min-height: 0; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); }
 .panel-toolbar { min-height: 34px; padding: 4px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--color-border); flex-shrink: 0; }
 .panel-toolbar h2 { min-width: 0; overflow-wrap: anywhere; }

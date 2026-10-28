@@ -1,11 +1,14 @@
 export type Quality = 'good' | 'defect' | 'unknown'
 export type Split = 'unassigned' | 'train' | 'val' | 'test'
 export type Roi = [number, number, number, number] | null
+export interface Box { x: number; y: number; width: number; height: number; label: string; confidence?: number }
+export const defectLabels = ['磨损', '缺角', '划痕', '氧化']
 export interface Specimen {
   tool_type: string; specimen_id: string; quality: Quality; split: Split; category: string
 }
 export interface Sample extends Specimen {
   id: string; path: string; width: number; height: number; included: boolean; view: string; created_at: string
+  boxes: Box[]; annotated: boolean; specimen_quality: Quality
 }
 export interface Workspace { specimens: Specimen[]; images: Sample[] }
 export interface Camera { connected: boolean; sn: string | null; fps?: number; size?: number[]; error?: string }

@@ -10,6 +10,8 @@ from PIL import Image
 
 from .preprocessing import IMAGE_SUFFIXES, prepare_directory
 
+DEFECT_LABELS = ("磨损", "缺角", "划痕", "氧化")
+
 
 def component(value):
     if not re.fullmatch(r"[\w\-\u4e00-\u9fff]{1,80}", value, flags=re.ASCII):
@@ -20,7 +22,7 @@ def component(value):
 class Workspace:
     def __init__(self, root):
         self.root = Path(root).resolve()
-        self.database = self.root / "data/web/workspace.sqlite3"
+        self.database = self.root / "data/web/workspace-v2.sqlite3"
         self.database.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript("""
@@ -36,6 +38,9 @@ class Workspace:
                     width INTEGER NOT NULL, height INTEGER NOT NULL,
                     included INTEGER NOT NULL DEFAULT 0,
                     boxes TEXT NOT NULL DEFAULT '[]',
+                    view TEXT NOT NULL DEFAULT 'top',
+                    quality TEXT NOT NULL DEFAULT 'unknown',
+                    annotated INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     FOREIGN KEY (tool_type, specimen_id)
                         REFERENCES specimens(tool_type, specimen_id)
@@ -45,8 +50,6 @@ class Workspace:
                     roi TEXT, PRIMARY KEY (tool_type, view)
                 );
             """)
-            if "view" not in {row["name"] for row in db.execute("PRAGMA table_info(images)")}:
-                db.execute("ALTER TABLE images ADD COLUMN view TEXT NOT NULL DEFAULT 'top'")
 
     @contextmanager
     def connect(self):
@@ -136,14 +139,15 @@ class Workspace:
         with self.connect() as db:
             specimens = [dict(row) for row in db.execute("SELECT * FROM specimens ORDER BY tool_type,specimen_id")]
             images = [dict(row) for row in db.execute("""
-                SELECT images.*, specimens.quality, specimens.split, specimens.category
+                SELECT images.*, specimens.quality AS specimen_quality, specimens.split, specimens.category
                 FROM images JOIN specimens USING (tool_type,specimen_id)
                 ORDER BY created_at DESC, path DESC
             """)]
         for item in images:
             item["boxes"] = json.loads(item["boxes"])
             item["included"] = bool(item["included"])
-        return {"specimens": specimens, "images": images}
+            item["annotated"] = bool(item["annotated"])
+        return {"specimens": specimens, "images": images, "labels": list(DEFECT_LABELS)}
 
     def image(self, image_id):
         with self.connect() as db:
@@ -160,16 +164,29 @@ class Workspace:
             raise FileNotFoundError("原始图片不存在或超出 data/raw")
         return path
 
-    def update_image(self, image_id, included, boxes):
+    def update_image(self, image_id, included=None, boxes=None, quality=None, annotated=None, view=None):
         item = self.image(image_id)
+        boxes = item["boxes"] if boxes is None else boxes
+        quality = item["quality"] if quality is None else quality
+        annotated = bool(item["annotated"]) if annotated is None else annotated
+        if quality not in {"good", "defect", "unknown"}:
+            raise ValueError("未知当前面好坏标签")
         for box in boxes:
             x, y, width, height = (box[key] for key in ("x", "y", "width", "height"))
             if not (0 <= x < x + width <= item["width"] and 0 <= y < y + height <= item["height"]):
                 raise ValueError("标注框超出原图范围，或宽高无效")
-            if not box["label"].strip():
-                raise ValueError("标注框需要缺陷名称")
+            if box["label"] not in DEFECT_LABELS:
+                raise ValueError("缺陷类别应为磨损、缺角、划痕或氧化")
+        if annotated and (quality == "unknown" or (quality == "defect" and not boxes)):
+            raise ValueError("完成标注需要确认当前面好坏，坏件需要至少一个缺陷框")
+        if quality != "defect" and boxes:
+            raise ValueError("有缺陷框的图片应标为当前面不合格")
+        if view is not None and view not in {"top", "bottom"}:
+            raise ValueError("拍摄面应为正面或背面")
         with self.connect() as db:
-            db.execute("UPDATE images SET included=?,boxes=? WHERE id=?", (included, json.dumps(boxes, ensure_ascii=False), image_id))
+            db.execute("UPDATE images SET included=?,boxes=?,quality=?,annotated=?,view=? WHERE id=?",
+                       (bool(item["included"]) if included is None else included,
+                        json.dumps(boxes, ensure_ascii=False), quality, annotated, view or item["view"], image_id))
 
     def recipe(self, tool_type, view):
         component(tool_type)
