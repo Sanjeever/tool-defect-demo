@@ -52,6 +52,10 @@ export default function Detect({ data, jobs, camera, busy, run, navigate, onDirt
     setSelected(next.id); setVisual('result'); setPane('operate'); setPicture('source.png'); setMobilePane('image')
   })
   const saveReview = () => run(() => api(`/api/jobs/${job!.id}/review`, 'POST', { quality, note, boxes, tool_type: reviewTool, view: reviewView }))
+  const rerun = () => run(async () => {
+    const next = await api<Job>(`/api/jobs/${job!.id}/rerun`, 'POST', settings)
+    setSelected(next.id); setVisual('result'); setPicture('source.png'); setMobilePane('image')
+  })
   const reviewSaved = !!job?.review && quality === job.review.quality && note === job.review.note && reviewTool === job.review.tool_type && reviewView === job.review.view && JSON.stringify(boxes) === JSON.stringify(job.review.boxes)
   const adopt = () => run(() => api(`/api/jobs/${job!.id}/adopt`, 'POST', { tool_type: reviewTool, view: reviewView, specimen_id: specimen,
     quality: data.specimens.find(s => s.tool_type === reviewTool && s.specimen_id === specimen)?.quality ?? 'unknown' }))
@@ -80,7 +84,7 @@ export default function Detect({ data, jobs, camera, busy, run, navigate, onDirt
     <section className="panel detect-sidebar"><div className="pane-tabs">{[['operate', records ? '结果' : '检测'], ...(!records ? [['settings', '设置']] : []), ['review', '复核'], ['logs', '任务']].map(([value, name]) => <button key={value} className={pane === value ? 'active' : ''} onClick={() => { setPane(value); if (value === 'review') { setVisual('result'); setPicture('source.png') } }}>{name}</button>)}</div>
       {pane === 'operate' ? <div className="detect-primary">{!records && <><Button isDisabled={!ready || !camera.connected || !!camera.error} onPress={() => void detect()}><Camera size={16} />拍照检测</Button><Button variant="outline" isDisabled={!ready} onPress={() => upload.current?.click()}><FileImage size={16} />导入图片检测</Button>{!data.schemes.length && <Button variant="ghost" onPress={() => navigate('models')}>先创建并启用检测方案</Button>}</>}
         {result && <><div className="result-detail"><span>已知缺陷</span><strong>{result.boxes.length} 处</strong></div>{result.experimental && <span className="status status-running">实验模型 · 未校准</span>}
-          <p className="model-note">{result.defect_status ?? '请在设置中人工指定类型和拍摄面后重新检测'}</p>
+          {result.models ? <p className="model-note">{result.defect_status}</p> : <><label className="field">确认类型与拍摄面<select aria-label="确认检测类型与拍摄面" value={route} onChange={e => setRoute(e.target.value)}><option value="">请选择</option>{data.schemes.map(s => <option key={`${s.tool_type}/${s.view}`} value={`${s.tool_type}/${s.view}`}>{s.tool_type} · {faces[s.view]}</option>)}</select></label><Button variant="outline" isDisabled={!ready || !route} onPress={() => void rerun()}>确认并继续检测</Button></>}
           <DefectRows boxes={shownBoxes} page={boxPage} />
           {pages > 1 && <Pager page={Math.min(boxPage, pages - 1)} pages={pages} onChange={setBoxPage} label="缺陷" />}
           {job?.review && <span className="model-note">复核：{job.review.quality === 'good' ? '当前面合格' : job.review.quality === 'defect' ? '当前面不合格' : '待确认'} · {job.reviews?.length ?? 1} 次</span>}

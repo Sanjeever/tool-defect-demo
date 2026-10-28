@@ -11,8 +11,9 @@ export default function Review(props: PageProps) {
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState('')
   const [dirty, setDirty] = useState(false)
+  const markDirty = (value: boolean) => { setDirty(value); props.onDirty(value) }
   const [pane, setPane] = useState('annotate')
-  const samples = data.images.filter(i => i.tool_type === tool && i.view === view && (filter === 'all' || (filter === 'pending' ? !i.annotated : i.quality === filter)))
+  const samples = data.images.filter(i => i.tool_type === tool && i.view === view && (filter === 'all' || (filter === 'pending' ? !i.annotated : filter === 'excluded' ? !i.included : i.quality === filter)))
   const pages = Math.max(1, Math.ceil(samples.length / 8))
   const shown = samples.slice(Math.min(page, pages - 1) * 8, (Math.min(page, pages - 1) + 1) * 8)
   const current = samples.find(i => i.id === selected) ?? shown[0]
@@ -20,15 +21,16 @@ export default function Review(props: PageProps) {
   return <div className={`annotation-layout annotation-pane-${pane}`}>
     <section className="panel annotation-library"><div className="panel-toolbar"><h2>样本</h2><Button size="sm" variant="ghost" isDisabled={dirty} onPress={() => navigate('collect')}><Camera size={14} />采集</Button></div>
       <div className="library-filter"><select aria-label="样本筛选" disabled={dirty} value={filter} onChange={e => { setFilter(e.target.value); setPage(0) }}>
-        <option value="all">全部图片</option><option value="pending">待标注</option><option value="good">当前面合格</option><option value="defect">当前面不合格</option></select></div>
+        <option value="all">全部图片</option><option value="pending">待标注</option><option value="excluded">未采用</option><option value="good">当前面合格</option><option value="defect">当前面不合格</option></select></div>
       <div className="annotation-thumbnails">{shown.map(item => <button key={item.id} disabled={dirty && current?.id !== item.id} className={item.id === current?.id ? 'annotation-thumb selected' : 'annotation-thumb'} onClick={() => { setSelected(item.id); setPane('annotate') }}>
-        <img src={imageUrl(item.id)} alt={item.specimen_id} /><span>{item.specimen_id}</span><small>{item.annotated ? qualities[item.quality] : '待标注'}</small></button>)}
+        <img src={imageUrl(item.id)} alt={item.specimen_id} /><span>{item.specimen_id}</span><small>{item.annotated ? `${item.included ? '' : '未采用 · '}${qualities[item.quality]}` : '待标注'}</small></button>)}
         {!samples.length && <div className="empty">暂无图片</div>}</div>
       <Pager page={Math.min(page, pages - 1)} pages={pages} onChange={value => { if (!dirty) { setPage(value); setSelected('') } }} label="样本" />
     </section>
-    {current ? <><div className="annotation-mobile pane-tabs"><button onClick={() => setPane('library')}>图片列表</button><button onClick={() => setPane('annotate')}>标注</button></div>
-      <Annotation key={current.id} sample={current} {...props} onDirty={setDirty} />
+    {current ? <><div className="annotation-mobile pane-tabs"><button onClick={() => setPane('library')}>图片列表</button><button onClick={() => setPane('annotate')}>标注</button><button onClick={() => setPane('specimen')}>实物</button></div>
+      <Annotation key={current.id} sample={current} {...props} onDirty={markDirty} />
       <section className="panel annotation-specimen"><div className="panel-toolbar"><h2>实物分组</h2></div><div className="settings-form"><span>{current.specimen_id}</span>
+        <label className="field">实物好坏<select aria-label="实物好坏" value={specimen?.quality ?? 'unknown'} disabled={busy} onChange={e => void run(() => api('/api/specimens', 'PUT', { ...specimen, quality: e.target.value, category: '' }))}>{Object.entries(qualities).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
         <label className="field">数据分组<select aria-label="实物数据分组" value={specimen?.split ?? 'unassigned'} disabled={busy} onChange={e => void run(() => api('/api/specimens', 'PUT', { ...specimen, split: e.target.value }))}>
           {Object.entries(splits).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>
         <p className="model-note">同一实物的正反面和重复拍摄共用分组。</p></div></section>
@@ -64,6 +66,7 @@ function Annotation({ sample, busy, run, data, onDirty }: PageProps & { sample: 
         <span className="mono">{Math.round(box.width)} × {Math.round(box.height)}</span><Button size="sm" variant="ghost" isIconOnly aria-label={`删除缺陷 ${index + 1}`} onPress={() => { setBoxes(boxes.filter((_, i) => i !== index)); setSelected(-1); change() }}><Trash2 size={14} /></Button></div>
     })}{!boxes.length && <span className="muted">未标注缺陷区域</span>}</div>
     <div className="annotation-footer"><Pager page={Math.min(page, pages - 1)} pages={pages} onChange={setPage} label="缺陷" /><div className="toolbar-actions">
+      {sample.included && !dirty && <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => void run(() => api(`/api/images/${sample.id}`, 'PATCH', { included: false }))}>取消采用</Button>}
       {dirty && <Button size="sm" variant="ghost" onPress={() => { setBoxes(sample.boxes); setQuality(sample.quality); setView(sample.view); setDirty(false); onDirty(false) }}>撤销修改</Button>}
       <Button size="sm" isDisabled={busy || quality === 'unknown' || (quality === 'defect' ? !boxes.length : !!boxes.length)} onPress={() => void save()}>确认并采用</Button></div></div>
   </section>

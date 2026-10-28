@@ -302,3 +302,7 @@ class Workspace:
         with self.connect() as db:
             db.execute("INSERT INTO schemes VALUES (?,?,?,?) ON CONFLICT(tool_type,view) DO UPDATE SET anomaly_job=excluded.anomaly_job,detector_job=excluded.detector_job",
                        (tool_type, view, anomaly_job, detector_job))
+
+    def disable_scheme(self, tool_type, view):
+        with self.connect() as db:
+            db.execute("DELETE FROM schemes WHERE tool_type=? AND view=?", (tool_type, view))

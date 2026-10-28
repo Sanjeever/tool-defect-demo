@@ -21,7 +21,7 @@ export interface Job {
   result?: { label: string; anomaly_score: number | null; anomaly_label?: string; source_size: number[]; boxes: Box[]; tool_type?: string; view?: string; experimental?: boolean; defect_status?: string; models?: { anomaly: string; detector: string | null }; recognition: { method: string; similarity: number | null; candidates: (Scheme & { similarity: number })[] } }
   review?: { quality: Quality; note: string; at: string; boxes: Box[]; tool_type?: string; view?: string }
   reviews?: Job['review'][]; adopted_image?: string
-  metrics?: { scope: string; values: Record<string, number> }
+  metrics?: { scope: string; values: Record<string, number | number[]> }
 }
 export interface Plan {
   ready: boolean; issues: string[]

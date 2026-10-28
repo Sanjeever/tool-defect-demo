@@ -125,7 +125,9 @@ class Jobs:
                     checkpoint = f"{settings['model']}/model.ckpt"
                     if not (directory / checkpoint).is_file():
                         raise FileNotFoundError("模型进程未生成预期权重")
-                    self.update(job_id, status="succeeded", phase="finished", checkpoint=checkpoint)
+                    metrics_path = directory / settings["model"] / "metrics.json"
+                    metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else None
+                    self.update(job_id, status="succeeded", phase="finished", checkpoint=checkpoint, metrics=metrics)
                 else:
                     self.update(job_id, phase="predicting")
                     result = self.detect(job_id, settings, directory, log)

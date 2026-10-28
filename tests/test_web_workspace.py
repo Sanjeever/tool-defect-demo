@@ -227,6 +227,11 @@ class WorkspaceTests(unittest.TestCase):
             response = client.put("/api/schemes", json={"tool_type": "type_01", "view": "top", "anomaly_job": "model"})
             self.assertEqual(response.status_code, 422)
             self.assertIn("拍摄面", response.json()["detail"])
+            response = client.put("/api/schemes", json={"tool_type": "type_01", "view": "top", "anomaly_job": "top_model"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(client.get("/api/state").json()["schemes"]), 1)
+            self.assertEqual(client.delete("/api/schemes/type_01/top").status_code, 200)
+            self.assertEqual(client.get("/api/state").json()["schemes"], [])
             process.assert_not_called()
 
     def test_review_is_separate_from_model_result_and_survives_restart(self):
@@ -257,6 +262,42 @@ class WorkspaceTests(unittest.TestCase):
             with ZipFile(BytesIO(response.content)) as archive:
                 self.assertEqual(set(archive.namelist()), {"model.ckpt", "model.json", "manifest.json", "reference.png"})
                 self.assertTrue(json.loads(archive.read("model.json"))["experimental"])
+
+    def test_manual_rerun_uses_saved_source_without_recapturing(self):
+        self.write_model_job()
+        self.workspace.save_scheme("type_01", "top", "model", None)
+        directory = self.root / "outputs/workbench/jobs/inspection"
+        directory.mkdir()
+        Image.new("RGB", (60, 40), "red").save(directory / "source.png")
+        (directory / "job.json").write_text(json.dumps({"id": "inspection", "kind": "detect", "status": "succeeded"}), encoding="utf-8")
+        app = create_app(self.root)
+        with TestClient(app) as client, patch.object(app.state.jobs, "start", return_value={"id": "retry"}) as start, patch.object(app.state.camera, "capture") as camera:
+            result = client.post("/api/jobs/inspection/rerun", json={"route_tool": "type_01", "route_view": "top", "camera": True})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(start.call_args.args[1]["parent_job"], "inspection")
+            self.assertFalse(start.call_args.args[1]["camera"])
+            self.assertEqual(start.call_args.kwargs["image"].getpixel((0, 0)), (255, 0, 0))
+            camera.assert_not_called()
+
+    def test_review_adoption_preserves_existing_validation_and_test_groups(self):
+        for split in ("unassigned", "val", "test"):
+            self.workspace.save_specimen("type_01", split, "defect", split, "")
+            directory = self.root / "outputs/workbench/jobs" / split
+            directory.mkdir(parents=True)
+            Image.new("RGB", (60, 40)).save(directory / "source.png")
+            job = {"id": split, "kind": "detect", "status": "succeeded", "review": {
+                "quality": "good", "tool_type": "type_01", "view": "top", "boxes": []}}
+            (directory / "job.json").write_text(json.dumps(job), encoding="utf-8")
+            with TestClient(create_app(self.root)) as client:
+                result = client.post(f"/api/jobs/{split}/adopt", json={"tool_type": "type_01", "specimen_id": split, "quality": "defect"})
+                self.assertEqual(result.status_code, 200, result.text)
+                state = client.get("/api/state").json()
+                specimen = next(item for item in state["specimens"] if item["specimen_id"] == split)
+                self.assertEqual(specimen["split"], "train" if split == "unassigned" else split)
+                image = next(item for item in state["images"] if item["id"] == result.json()["id"])
+                self.assertEqual(image["quality"], "good")
+                self.assertEqual(image["specimen_quality"], "defect")
+                self.assertEqual(client.post(f"/api/jobs/{split}/adopt", json={"tool_type": "type_01", "specimen_id": split, "quality": "defect"}).status_code, 422)
 
     def test_live_preview_streams_jpeg_without_registering_samples(self):
         output = BytesIO()

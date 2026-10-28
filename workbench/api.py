@@ -287,7 +287,12 @@ def create_app(root=ROOT):
         workspace.save_scheme(**settings.model_dump())
         return {"saved": True}
 
-    def detect(settings, image, source_item=None):
+    @app.delete("/api/schemes/{tool_type}/{view}")
+    def disable_scheme(tool_type: str, view: str):
+        workspace.disable_scheme(tool_type, view)
+        return {"saved": True}
+
+    def detect(settings, image, source_item=None, parent_job=None):
         schemes = workspace.state()["schemes"]
         if not schemes:
             raise ValueError("请先在模型页启用至少一个检测方案")
@@ -299,8 +304,17 @@ def create_app(root=ROOT):
                 jobs.model(scheme["detector_job"], "detector")
         values = {**settings.model_dump(mode="json"), "model": "scheme", "schemes": schemes,
                   "preprocessing": VERSION, "source_item": source_item,
-                  "camera_info": camera.status() if settings.camera else None}
+                  "camera_info": camera.status() if settings.camera else None, "parent_job": parent_job}
         return jobs.start("detect", values, image=image)
+
+    @app.post("/api/jobs/{job_id}/rerun")
+    def rerun_detection(job_id: str, settings: DetectSettings):
+        job = jobs.get(job_id)
+        if job["kind"] != "detect" or job["status"] not in {"succeeded", "failed"}:
+            raise ValueError("请选择已有原图的已结束检测任务")
+        settings = settings.model_copy(update={"camera": False, "image_id": None})
+        with Image.open(jobs.root / job_id / "source.png") as source:
+            return detect(settings, source.copy(), parent_job=job_id)
 
     @app.post("/api/detections")
     def detect_image(settings: DetectSettings):
@@ -331,7 +345,7 @@ def create_app(root=ROOT):
                     raise ValueError("复核缺陷框超出原图")
         if settings.quality == "good" and settings.boxes:
             raise ValueError("合格复核不能保留缺陷框")
-        review = {**settings.model_dump(mode="json"), "at": datetime.now().isoformat(timespec="seconds")}
+        review = {**settings.model_dump(mode="json"), "at": datetime.now().isoformat(timespec="milliseconds")}
         reviews = [*job.get("reviews", []), review]
         jobs.update(job_id, review=review, reviews=reviews)
         (jobs.root / job_id / "result.json").write_text(
@@ -353,6 +367,9 @@ def create_app(root=ROOT):
         with Image.open(jobs.root / job_id / "source.png") as source:
             registered = register_image(source.copy(), settings)
         workspace.update_image(registered["id"], included=True, quality=review["quality"], boxes=review["boxes"], annotated=True)
+        specimen = next(item for item in workspace.state()["specimens"] if (item["tool_type"], item["specimen_id"]) == (settings.tool_type, settings.specimen_id))
+        if specimen["split"] == "unassigned":
+            workspace.save_specimen(settings.tool_type, settings.specimen_id, specimen["quality"], "train", specimen["category"])
         jobs.update(job_id, adopted_image=registered["id"])
         return registered
 
@@ -398,7 +415,7 @@ def create_app(root=ROOT):
                         archive.write(jobs.root / job_id / "manifest.json", "manifest.json")
             return FileResponse(path, filename=f"{job_id}-{job['model']}.zip")
         if name not in {"manifest.json", "run.log", "source.png", "input.png", "aligned.png", "heatmap.png", "reference.png",
-                        "transform.json", "detector-transform.json", "detector-input.png", "predictions/input.heatmap.png", "result.json", job["checkpoint"]}:
+                        "transform.json", "detector-transform.json", "detector-input.png", "predictions/input.heatmap.png", "result.json", "detector/metrics.json", job["checkpoint"]}:
             raise FileNotFoundError("文件不存在")
         path = jobs.root / job_id / name
         if not path.is_file():

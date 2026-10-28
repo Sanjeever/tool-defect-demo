@@ -12,31 +12,38 @@ def make_model(labels):
         input_size=(512, 512), mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)))
 
 
-def train(args):
+def make_data(args):
     from getitune.config.data import SubsetConfig
     from getitune.data.module import DataModule
-    from getitune.engine import create_engine
     from getitune.types.task import TaskType
-    from lightning.pytorch.callbacks import ModelCheckpoint
-    from lightning.pytorch.loggers import CSVLogger
 
     def subset(name):
         return SubsetConfig(subset_name=name, batch_size=args.batch_size, num_workers=0, input_size=(512, 512),
             augmentations_cpu=[{"class_path": "torchvision.transforms.v2.Normalize", "init_args": {
                 "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}}])
 
-    data = DataModule(task=TaskType.DETECTION, data_root=str(args.data), input_size=(512, 512),
+    return DataModule(task=TaskType.DETECTION, data_root=str(args.data), input_size=(512, 512),
                       train_subset=subset("train"), val_subset=subset("val"), test_subset=subset("test"))
+
+
+def train(args):
+    from getitune.engine import create_engine
+    from lightning.pytorch.callbacks import ModelCheckpoint
+    from lightning.pytorch.loggers import CSVLogger
+
+    data = make_data(args)
     model = make_model(data.label_info)
     engine = create_engine(model=model, data=data, work_dir=args.output, device="gpu" if args.device == "cuda" else "cpu")
     callback = ModelCheckpoint(dirpath=args.output, filename="weights", monitor=None, save_top_k=1)
-    engine.train(max_epochs=args.epochs, seed=42, precision="32-true", logger=CSVLogger(args.output / "logs"), callbacks=[callback],
+    metrics = engine.train(max_epochs=args.epochs, seed=42, precision="32-true", logger=CSVLogger(args.output / "logs"), callbacks=[callback],
                  limit_val_batches=0 if args.experimental else 1.0, num_sanity_val_steps=0)
     shutil.copy2(engine.checkpoint, args.output / "model.ckpt")
     (args.output / "model.json").write_text(json.dumps({
         "labels": data.label_info.label_names, "experimental": args.experimental,
         "engine": "getitune", "version": "0.1.3", "architecture": "yolox_tiny", "input_size": 512,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    (args.output / "metrics.json").write_text(json.dumps({"scope": "训练过程" if args.experimental else "训练与验证",
+        "values": metrics}, ensure_ascii=False, default=lambda value: value.tolist()), encoding="utf-8")
     print("Geti 缺陷区域模型已保存；实验训练不产生独立验证指标" if args.experimental else "Geti 缺陷区域模型已保存")
 
 
@@ -69,22 +76,42 @@ def predict(args):
     args.output.write_text(json.dumps({"boxes": boxes, "experimental": metadata["experimental"]}, ensure_ascii=False), encoding="utf-8")
 
 
+def test(args):
+    from getitune.engine import create_engine
+
+    metadata = json.loads(args.checkpoint.with_name("model.json").read_text(encoding="utf-8"))
+    if metadata["experimental"]:
+        raise ValueError("实验模型不能报告正式测试指标，请补充独立验证实物后训练")
+    data = make_data(args)
+    if "test" not in data.subsets:
+        raise ValueError("数据中没有独立测试组")
+    model = make_model(metadata["labels"])
+    engine = create_engine(model=model, data=data, checkpoint=args.checkpoint, work_dir=args.output,
+                           device="gpu" if args.device == "cuda" else "cpu")
+    metrics = engine.test()
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output / "metrics.json").write_text(json.dumps(metrics, default=lambda value: value.tolist()), encoding="utf-8")
+    print(f"独立测试指标：{args.output / 'metrics.json'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="独立 Geti 环境：训练与预测多类别刀具缺陷区域")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="验证 Geti、PyTorch 和 CUDA，不训练、不打开相机")
-    for name in ("train", "predict"):
+    for name in ("train", "predict", "test"):
         command = commands.add_parser(name)
         command.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
         command.add_argument("--output", type=Path, required=True)
-        if name == "train":
+        if name in {"train", "test"}:
             command.add_argument("--data", type=Path, required=True)
-            command.add_argument("--epochs", type=int, default=30)
             command.add_argument("--batch-size", type=int, default=2)
+        if name == "train":
+            command.add_argument("--epochs", type=int, default=30)
             command.add_argument("--experimental", action="store_true")
         else:
-            command.add_argument("--source", type=Path, required=True)
             command.add_argument("--checkpoint", type=Path, required=True)
+        if name == "predict":
+            command.add_argument("--source", type=Path, required=True)
             command.add_argument("--min-confidence", type=float, default=0.5)
     args = parser.parse_args()
     import torch
@@ -100,7 +127,11 @@ def main():
         if args.epochs < 1 or args.batch_size < 1:
             parser.error("训练轮数与批量必须大于 0")
         args.output.mkdir(parents=True, exist_ok=True)
+        if (args.output / "model.ckpt").exists():
+            raise FileExistsError("输出模型已存在，请指定新的 --output")
         train(args)
+    elif args.command == "test":
+        test(args)
     else:
         if not 0 <= args.min_confidence <= 1:
             parser.error("置信度门槛应在 0～1 之间")
