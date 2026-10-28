@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from prepare_images import check_prepared_images
+from .preprocessing import check_prepared_images
 
 
 def make_datamodule(root, split, batch_size):
@@ -113,7 +113,7 @@ def predict(args):
     else:
         with Image.open(args.source) as image:
             if image.size != (256, 256):
-                raise ValueError("请先使用 prepare_images.py 生成 256×256 图片")
+                raise ValueError("请先运行 uv run python -m workbench.preprocessing 生成 256×256 图片")
         source_root = args.source.resolve().parent
     result_path = args.output / "results.jsonl"
     if result_path.exists():
@@ -122,7 +122,7 @@ def predict(args):
     engine = make_engine(args.device, args.output)
     classifier = None
     if args.classifier is not None:
-        from classifier import load_classifier
+        from .classifier import load_classifier
 
         classifier = load_classifier(args.classifier)
     predictions = engine.predict(model=model, dataset=PredictDataset(path=args.source.resolve()))
@@ -138,7 +138,7 @@ def predict(args):
                     "anomaly_score": float(batch.pred_score[index].item()),
                 }
                 if anomalous and classifier is not None:
-                    from classifier import classify_image
+                    from .classifier import classify_image
 
                     result["classification"] = classify_image(classifier, path, args.device, args.min_confidence)
                 anomaly_map = batch.anomaly_map[index].detach().cpu().numpy().squeeze()

@@ -1,309 +1,130 @@
-# 刀具缺陷检测实验
+# 刀具视觉工作台
 
-使用 Anomalib PatchCore 判断刀具正常／异常并生成热力图，使用 YOLO 分类模型识别已知缺陷类型。
-从离线图片开始，再接入大恒工业相机单张采集。
+在本机浏览器中采集刀具图片、整理样本、训练模型并检测单张图片。
+后端使用 Python、FastAPI 和 uv，前端使用 React、Vite、Tailwind CSS 和 HeroUI。
+Anomalib PatchCore 输出异常分数与热力图，YOLO 分类模型识别人工确认的已知缺陷类型。
 
-仓库提供环境配置、命令行入口和本机 Web 工作台，不附带刀具图片或训练权重。
-已收到首批样品，每种各有一件好件、一件坏件；第一种样品已确认存在崩角，并完成原图采集。
-当前尚未完成真实刀具模型训练、独立测试和合格阈值验证。
+目前有 7 对刀具，每对一好一坏。现有样品可用于拍摄和模型实验，对新刀具的检测效果尚未验证。
+同一把刀具重复拍照不能增加独立实物数量，也不能据此评价生产检测准确率。
 
-## 环境准备
+**启动**
 
-当前配置面向 Windows x64、Python 3.11、NVIDIA 显卡，使用 uv 管理环境。
-本机配置为 GTX 1650 Ti 4GB、约 32GB 内存，显卡驱动 552.12。
-
+环境为 Windows x64、Python 3.11、Node.js 22.17+、pnpm 11。
 在 PowerShell 中运行：
 
 ```powershell
 Set-Location D:\code\python\tool-defect-demo
 uv sync --locked
-uv run python check_env.py
+Set-Location web
+pnpm install --frozen-lockfile
+pnpm build
+Set-Location ..
+uv run python app.py
 ```
 
-首次同步会下载 Python 及依赖，PyTorch CUDA 包约 2.4GB，请预留下载和解压空间。
-无需手动激活虚拟环境。环境检查会导入模型入口并实际执行一次矩阵运算，不下载权重、不训练模型。
+打开 <http://127.0.0.1:8765>。前端构建完成后，日常启动运行 `uv run python app.py` 即可。
+需要更换端口时使用 `uv run python app.py --port 8766`。
+在启动终端按 Ctrl+C 退出，服务会停止自己的模型任务并释放已连接相机。
 
-主要依赖：
+**第一次操作**
 
-| 组件 | 配置 |
-| --- | --- |
-| Python | 3.11 |
-| Anomalib | 2.7.0 |
-| PyTorch／torchvision | 2.6.0／0.21.0，CUDA 12.4 构建 |
-| Ultralytics | `ultralytics-opencv-headless` 8.4.190 |
-| NumPy | 1.26.4，本机 `gxipy` 依赖 NumPy 1.x 接口 |
+1. 选一对缺陷明显的刀具，固定相机、照明、背景、摆放位置及拍摄面。
+2. 在 GalaxyView 中停止采集并关闭设备，释放相机控制权；工作台不会结束 GalaxyView 进程。
+3. 在网页点击“连接相机”，再点击“刷新预览”或“连续预览”。先确认缺陷在工业相机原图中清晰可见。
+4. 型号可先用 `type_01`，拍摄面用 `top`。好件实物编号用 `good_01`，坏件用 `bad_01`，分别确认好坏标签。
+5. 每件先拍约 20～30 张，每次取下再放回，覆盖日常摆放变化。不要把同一把刀具换个编号当成新实物。
+6. 在样本区剔除模糊、拍错面、缺陷出画面的图片，勾选可用图片。已有采集目录可点击“扫描已有图片”登记。
+7. 在“实物分组”把好件设为“训练”并保存。当前样品量先选择“模型 → PatchCore · 未校准实验”建库。
+8. 建库成功后进入“检测”，选择异常模型，再检测好件和坏件图片，查看分数与热力图，填写人工复核。
 
-YOLO 使用官方 headless 发行包，Python 导入仍为 `from ultralytics import YOLO`。
-本项目保存图片和结果文件，不依赖 OpenCV 弹窗。不要再安装 `opencv-python`，以免覆盖共享的 `cv2` 文件。
-依赖的完整版本记录在 `uv.lock` 中。
-OpenCV 和 imagecodecs 也固定为兼容 NumPy 1.x 的版本，避免 SDK 导入失败。
+实物标签和训练／验证／测试分组跨拍摄面共用。样本筛选与检测区域按型号、拍摄面分别设置。
+新拍摄或导入图片默认未选入数据集，原图不会被预处理结果覆盖。
+第一版按单件、单面检测，照片中看不见的侧面或背面缺陷不在该次检测范围内。
 
-没有可用 GPU 时，可以显式使用 CPU：
+**三种训练方式**
 
-```powershell
-uv run python check_env.py --device cpu
-```
+| 方式 | 数据条件 | 输出与限制 |
+| --- | --- | --- |
+| PatchCore · 未校准实验 | 至少有已选入的正常训练图片 | 建立正常特征库；输出原始异常分数和热力图，标签为“未校准”，不触发分类 |
+| PatchCore · 阈值校准 | 正常训练实物，以及不同实物的正常、异常验证图片 | 使用验证集校准正常／异常阈值；仍需独立测试实物评价漏检和误报 |
+| YOLO · 缺陷分类 | 至少两个真实缺陷类别，训练与验证每类使用不同实物 | 只用坏件图片训练类别；刀具型号不作为缺陷类别 |
 
-各模型入口也支持 `--device cpu`。当前锁文件仍安装 CUDA 版 PyTorch，选择 CPU 运算不会减少下载体积。
+同一实物的连拍、裁剪和增强图必须属于同一分组。验证集用于调阈值，测试集用于最终评价。
+当前每种一好一坏无法满足完整的独立训练、验证、测试要求，需要补充不同实物。
+工作台训练不会自动执行独立测试，离线测试命令见下文。
 
-## 项目入口
+检测区域可在参考图上拖动框选，也可以填写原图像素坐标；右、下边界不包含在区域内。
+预处理统一为灰度三通道、等比例缩放和黑色补边，输入尺寸为 256×256。
+这个尺寸用于初步实验，细小缺陷是否保留需查看“模型输入”。更改检测区域后需重新训练。
+旧模型检测始终使用训练快照中的区域与原图尺寸，避免后续配置改变模型输入。
 
-| 文件 | 用途 |
-| --- | --- |
-| `check_env.py` | 检查依赖、CUDA 运算及可选 SDK 导入 |
-| `camera.py` | 枚举相机，按 SN 采集一张灰度 PNG |
-| `prepare_images.py` | 裁剪 ROI、等比例缩放、补边并转换为 RGB PNG |
-| `anomaly.py` | PatchCore 训练、独立测试、图片检测及可选缺陷分类 |
-| `classifier.py` | YOLO 分类训练、独立测试与单图分类 |
-| `web_app.py` | 本机 Web 工作台，提供拍摄、图片审核、矩形标注与训练任务 |
-| `web_store.py` | 实体分组、标注存储与训练数据导出 |
-| `web/` | 工作台页面、样式与交互 |
-| `tests/` | 图像预处理回归检查 |
-| `data/` | 本地样本，Git 中保留空目录 |
-| `outputs/` | 运行时生成的模型、指标和检测结果 |
+校准模型判为异常后，才会调用所选 YOLO 分类模型。两个模型的型号、拍摄面、原图尺寸和检测区域必须一致。
+分类置信度门槛默认 0.7，是需要验证的初始值。低于门槛或未选择分类模型时，异常交由人工复核。
+高分类置信度不能保证识别未知缺陷。PatchCore 漏掉的缺陷不会进入分类环节。
+异常分数不等于缺陷概率；未校准热力图按单张图数值范围显示颜色，跨图颜色深浅不能直接比较。
 
-每个入口及模型子命令都支持 `--help`，例如：
+**相机与环境**
 
-```powershell
-uv run python anomaly.py train --help
-uv run python classifier.py train --help
-```
+- 相机为 Daheng MER-132-30GM，SN `GL0180040948`，当前 IP `192.168.0.22`。
+- 厂商 SDK 从 `C:\Program Files\Daheng Imaging\GalaxySDK` 加载，`GalaxyView.exe` 是调试软件。
+- 启动服务或打开网页不会连接相机。点击“连接相机”后才打开设备，预览和拍照使用 Mono8 软件触发。
+- 连续预览按顺序采图，适合调整摆放，帧率受触发和曝光影响。预览图不作为样本自动保存。
+- 断开或正常退出时恢复触发模式、触发源、像素格式及 GigE 包间隔；不修改曝光、增益和网络配置。
+- 保留 NumPy 1.26.4、OpenCV headless 4.11、PyTorch 2.6／torchvision 0.21 CUDA 12.4 的兼容组合。
+- 本机 GTX 1650 Ti 4GB，训练默认批量为 4；显存不足可改为 1。CPU 需显式选择，不会自动切换。
+- 首次训练可能下载预训练权重；这些通用权重不包含你的刀具缺陷知识。
 
-## 本机 Web 工作台
-
-```powershell
-uv sync --locked
-uv run python web_app.py
-```
-
-在浏览器打开 <http://127.0.0.1:8765>，可用 `--port` 指定其他端口。
-服务绑定本机地址，启动或打开页面不会控制相机。使用相机前，在 GalaxyView 中停止采集并关闭设备。
-
-- **采集**：填写样品类型、实体编号与好坏标签，点击刷新预览、连续预览或拍照保存。
-  连续预览逐张软件触发采图，每张完成后释放相机，适合摆放检查，不是相机满帧率视频。
-  默认数据包间隔为 20000，原始灰度 PNG 保存到 `data/raw/pilot/类型/实体编号/`，不会覆盖已有照片。
-- **图片与标注**：点击“导入已有采集图片”读取上述目录内的已有图片，按原图坐标拖动绘制缺陷矩形，
-  保存缺陷名称，审核后勾选“用于数据集”。新拍摄和导入的图片均默认未选入；错误面、缺角出画面的图片可保留原图而不参与训练。
-  在“实体分组”中设置好坏标签、真实缺陷类别及训练／验证／测试分组，修改会应用于同一实体的全部图片。
-- **训练**：检查某一类型的数据，选择 PatchCore 或 YOLO 分类、运行设备和批量大小，启动预处理与训练，
-  查看日志、停止当前任务并下载数据清单和生成的模型。任务复用现有训练入口；服务退出时停止本服务创建的训练进程。
-
-标注和实体分组保存在 `data/web/workspace.sqlite3`，任务、日志、数据快照与模型保存在 `outputs/web/jobs/`，
-均属于本地数据，不提交到 Git。标注会在保存按钮点击后，或切换图片、页面时保存；关闭页面前仍需完成保存。
-训练数据使用启动时的快照，后续修改标签不会改变已经启动的任务。
-
-矩形标注用于记录缺陷位置，当前 PatchCore 和 YOLO 分类入口仍使用图片级标签，不把框转换成像素掩码，
-也不会自动用缺陷框裁剪训练图。训练可选的统一 ROI 应用于该任务全部图片，处理后为 256×256；
-参数保存在任务数据清单中，后续推理需采用相同处理。
-
-PatchCore 需要正常训练实体，以及独立的正常、异常验证实体；训练集中的坏件不会进入正常特征库。
-YOLO 分类需要至少两个真实缺陷类别，每个类别在训练和验证中使用不同实体；好件不参与缺陷类别训练。
-测试图片会导出保留，但训练任务不会运行独立测试，后续可使用命令行测试入口。
-每种一好一坏尚不能满足 PatchCore 的独立正常验证要求，重复拍摄同一好件也不能补足独立实体。
-页面会显示缺失项并阻止启动不满足条件的训练。
-
-## 1. 准备图片
-
-先选择一种刀具和一个固定视角。固定相机、刀具位置、光源、曝光及增益，确认原图能清楚呈现目标缺陷。
-可以先用 GalaxyView 保存无损图片，再进行离线实验。
-
-按实际刀具划分数据，同一把刀具的连拍、裁剪和增强图归入同一组。
-`train` 用于建模，`val` 用于校准阈值，`test` 用于最终评估。不要把测试集用于调参。
-
-将原图按以下结构整理到 `data/raw/anomaly/`：
+**文件位置**
 
 ```text
-data/raw/anomaly/
-├── train/
-│   └── good/       正常训练图
-├── val/
-│   ├── good/       正常验证图
-│   └── defect/     缺陷验证图
-└── test/
-    ├── good/       正常测试图
-    └── defect/     缺陷测试图
+app.py                    工作台启动入口
+check_env.py              依赖、CUDA、可选 SDK 导入检查
+workbench/                后端、相机会话、模型与图像预处理
+web/src/                  React 界面
+tests/                    存储、API、预处理与相机会话检查
+data/raw/pilot/            型号/实物编号/拍摄面/原图.png
+data/web/workspace.sqlite3 样本标签、实物分组与检测区域
+outputs/web/jobs/         每次任务的数据快照、模型、日志和检测结果
 ```
 
-每个目录都需要真实图片。第一版不要求逐像素标注，支持 PNG、JPEG、BMP、TIFF。
+旧的“型号/实物编号/原图”目录扫描后默认归入 `top`，现有图片、分组和旧矩形标注会保留。
+训练与检测同一时间运行一个任务，可在任务日志中停止。重启后，未完成任务标为“已中断”，需重新运行。
+检测原图、模型输入、热力图和结果 JSON 保存在任务目录；人工复核与模型预测分别记录。
+下载模型会得到包含权重、数据清单及 PatchCore 模式元数据的 ZIP，解压后保留这些文件在同一目录。
+图片、模型、数据库、结果、依赖目录和构建产物均不提交 Git。
 
-生成模型输入：
-
-```powershell
-uv run python prepare_images.py --source data/raw/anomaly --output data/anomaly
-```
-
-有明确检测区域后，通过 `--roi 左 上 右 下` 裁剪，单位为原图像素。
-以下数字仅演示参数格式，执行前换成实际坐标：
-
-```powershell
-uv run python prepare_images.py --source data/raw/anomaly --output data/anomaly-roi --roi 100 100 700 500
-```
-
-右、下边界不包含在裁剪结果中。图片统一转换成三通道 RGB，灰度图复制为三个相同通道；
-统一转换为灰度后三通道，等比例缩放后用黑色补边为 256×256，保留输入目录结构。原图不会被覆盖，已存在的输出图片也不会覆盖。
-变更 ROI 后使用新的数据输出目录，并重新训练。
-
-当前模型入口要求输入为已处理的 256×256 图片。这个尺寸用于跑通流程，是否足以保留细小缺陷需要实图验证。
-训练、验证、测试和新图检测必须使用同样的 ROI 与预处理设置。
-
-## 2. 训练并验证 PatchCore
-
-只有一件正常实物时，可先做未校准实验建库：
-
-```powershell
-uv run python anomaly.py train --data data/anomaly --output outputs/patchcore-experiment --experimental
-```
-
-该模式仅读取 `train/good`，输出原始异常分数，检测标签为“未校准”，不能用于正式正常／异常判断。
-实验热力图按每张图片的数值范围显示颜色，跨图颜色深浅不能直接比较。
-补充独立实物验证数据后，使用下面的正式训练命令重新建模和校准。
-
-```powershell
-uv run python anomaly.py train --data data/anomaly --output outputs/patchcore
-```
-
-默认使用 ResNet18 特征提取器、批量大小 4、特征库采样比例 0.01，作为 4GB 显存的起点。
-首次训练会联网下载预训练特征提取器权重。
-PatchCore 收集正常图的特征，不通过多轮反向传播训练；增加训练轮数不是当前入口的调优方式。
-
-训练读取 `train/good` 建立正常特征库，使用 `val/good` 和 `val/defect` 校准异常阈值。
-程序通过 Anomalib `Folder` 的 `same_as_test` 模式把这两个验证目录接入验证流程；
-训练命令不会读取磁盘上的 `test/`。模型与校准参数保存在 `outputs/patchcore/model.ckpt`。
-
-在独立测试集上评价：
-
-```powershell
-uv run python anomaly.py test --data data/anomaly --checkpoint outputs/patchcore/model.ckpt
-```
-
-图像级 AUROC、F1 等指标写入 `outputs/test/metrics.json`。
-未提供像素掩码时，不能据此声称像素级缺陷定位准确率。
-样本少时还应逐张查看结果，统计漏检和误报。
-
-显存不足时先将训练批量降为 1，仍需根据实际图片数量和运行结果调整：
-
-```powershell
-uv run python anomaly.py train --data data/anomaly --output outputs/patchcore-small --batch-size 1
-```
-
-## 3. 检测新图片
-
-把新原图放入 `data/raw/incoming/`，按训练时相同的设置处理：
-
-```powershell
-uv run python prepare_images.py --source data/raw/incoming --output data/incoming
-uv run python anomaly.py predict --checkpoint outputs/patchcore/model.ckpt --source data/incoming --output outputs/predictions
-```
-
-输出目录包含每张图片的热力图叠加图和 `results.jsonl`，每行对应一张图片，包含路径、正常／异常标签和异常分数。
-异常分数不等于缺陷概率。热力图用于检查模型关注的位置，缺少像素标注时仍需人工核对。
-再次实验时指定新的 `--output`，避免覆盖已有结果。
-
-## 4. 接入大恒相机
-
-当前目标相机为 MER-132-30GM，SN 为 `GL0180040948`，IP 为 `192.168.0.22`。
-默认读取以下本机 SDK，不通过 PyPI 安装同名 `gxipy`：
-
-```text
-C:\Program Files\Daheng Imaging\GalaxySDK
-```
-
-先检查 SDK 能否导入，再枚举设备：
-
-```powershell
-uv run python check_env.py --check-sdk
-uv run python camera.py --list
-```
-
-枚举不会打开相机。采集前在 GalaxyView 中停止采集并关闭该设备，释放控制权。
-运行以下命令保存一张图片：
-
-```powershell
-uv run python camera.py --sn GL0180040948 --output data/raw/incoming/tool-001.png
-```
-
-采集时暂时切换为软件触发、使用 Mono8，并将 GigE 包间隔设置为 10000 个相机时钟周期。
-按厂商示例在接收流启动后等待 100 毫秒，再触发一张图片，使用 `dq_buf/q_buf` 获取并归还 SDK 缓冲区。
-本机原采集方式出现首帧不完整；调整后连续 30 帧完整，丢帧计数为 0。
-另外完成 10 次独立打开、采集和释放验证，均保存成功，并核对采集后的参数已恢复。
-可以通过 `--packet-delay` 显式调整。遇到不完整帧时程序报错，不保存该帧或静默重试。
-结束时恢复原触发模式、触发源、像素格式和包间隔，并释放设备。
-不会修改曝光、增益、IP 或网关。GalaxySDK 安装位置不同时，用 `--sdk-root` 指定路径。
-保存图片后，按照上一节预处理并检测。
-
-## 5. 按已知缺陷类型分类
-
-这一阶段需要真实缺陷类别和对应图片。YOLO 分类给整张 ROI 图片一个类别；
-一张图存在多种缺陷、需要分别定位时，应另行设计目标检测或多标签任务。
-
-将分类原图放入 `data/raw/classification/`，目录格式如下。
-`class_a`、`class_b` 是结构示例，需替换为真实类别名称：
-
-```text
-data/raw/classification/
-├── train/
-│   ├── class_a/
-│   └── class_b/
-├── val/
-│   ├── class_a/
-│   └── class_b/
-└── test/
-    ├── class_a/
-    └── class_b/
-```
-
-先使用相同 ROI 预处理，再训练。首次训练会下载 YOLO26n 分类预训练权重：
-
-```powershell
-uv run python prepare_images.py --source data/raw/classification --output data/classification
-uv run python classifier.py train --data data/classification --epochs 30
-uv run python classifier.py test --data data/classification --checkpoint outputs/classifier/weights/best.pt
-```
-
-为保留刀尖和刃口，输入先补边为方形，分类训练关闭随机缩放裁剪、翻转、擦除和颜色增强。
-本机 GTX 1650 Ti 未通过 Ultralytics 的混合精度检查，训练显式关闭 AMP，使用单精度运算。
-得到真实数据后，再决定哪些增强符合拍摄条件。
-
-单张异常图分类：
-
-```powershell
-uv run python classifier.py predict --checkpoint outputs/classifier/weights/best.pt --source data/incoming/tool-001.png
-```
-
-将两个模型串联，仅对 PatchCore 判为异常的图片进行分类：
-
-```powershell
-uv run python anomaly.py predict --checkpoint outputs/patchcore/model.ckpt --source data/incoming --classifier outputs/classifier/weights/best.pt --output outputs/combined
-```
-
-分类置信度低于 `--min-confidence` 时输出“异常待复核”。默认值 0.7 是初始参数，需要用验证集调整，
-不能据此保证未知缺陷识别。分类器可能对未知缺陷给出高置信度；PatchCore 漏掉的缺陷也不会进入分类环节。
-串联流程需要单独评价整体漏检和分类结果。
-
-## 开发检查
+**开发与验证**
 
 ```powershell
 uv run python -m unittest discover -s tests -v
 uv run python check_env.py --check-sdk
+Set-Location web
+pnpm build
+pnpm dev
 ```
 
-预处理检查使用临时生成的图片，验证 ROI、补边、灰度转换及文件保护，不代表刀具检测效果。
-真实训练、测试和采集应分别记录实际结果。
+开发时另一个终端运行 `uv run python app.py`，Vite 默认在 <http://127.0.0.1:5173>，代理 API 到 8765。
+项目检查不会自动打开相机。相机 SDK 生命周期的自动化检查使用 mock，不能替代实物采图验证。
 
-初始化时已在本机通过以下验证：
+以下入口用于需要时的离线操作，各命令支持 `--help`：
 
-- 依赖兼容性检查、CUDA 矩阵运算、Anomalib／YOLO／GalaxySDK 导入。
-- 6 项图像预处理检查。
-- 枚举到 MER-132-30GM，SN 为 `GL0180040948`。
-- 临时生成图片上的 PatchCore 与 YOLO 训练、模型重载、测试、图片推理及串联分类流程。
+```powershell
+uv run python -m workbench.camera --help
+uv run python -m workbench.preprocessing --help
+uv run python -m workbench.anomaly train --help
+uv run python -m workbench.anomaly test --help
+uv run python -m workbench.classifier train --help
+uv run python -m workbench.classifier test --help
+```
 
-临时图片用于检查软件流程，相关权重与结果不作为刀具模型交付。实际刀具检测效果尚未验证。
-退出 GalaxyView 后已实测单张采集，保存 1292×964 的 8 位灰度 PNG，采集结束后释放设备并恢复参数。
+离线异常数据采用 `train/good`、`val/good`、`val/defect`、`test/good`、`test/defect`，输入需经过相同预处理。
+分类数据采用 `train/类别`、`val/类别`、`test/类别`。使用训练时的任务快照或相同处理设置。
 
-## 参考
+```powershell
+uv run python -m workbench.anomaly test --data outputs/web/jobs/训练任务编号/prepared --checkpoint outputs/web/jobs/训练任务编号/patchcore/model.ckpt --output outputs/独立异常测试
+uv run python -m workbench.classifier test --data outputs/web/jobs/训练任务编号/prepared --checkpoint outputs/web/jobs/训练任务编号/classifier/weights/best.pt --output outputs/独立分类测试
+```
 
-- [Anomalib 入门](https://anomalib.readthedocs.io/en/stable/markdown/get_started/anomalib.html)
-- [PatchCore](https://anomalib.readthedocs.io/en/stable/markdown/guides/reference/models/image/patchcore.html)
-- [YOLO 图像分类](https://docs.ultralytics.com/tasks/classify/)
-- [Ultralytics 安装与 headless 发行包](https://docs.ultralytics.com/quickstart/)
-- [uv 与 PyTorch](https://docs.astral.sh/uv/guides/integration/pytorch/)
+上述测试需要任务数据中确实包含独立测试实物。未校准实验模型不能用于正式指标测试。
+软件流程已使用临时生成图验证训练、重载、推理和串联分类；这些结果不代表真实刀具检测效果。
+真实相机在新工作台内的连接、持续预览、单张采集，以及真实刀具检测效果仍需实机验证。

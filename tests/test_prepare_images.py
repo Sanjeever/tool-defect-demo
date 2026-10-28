@@ -4,7 +4,7 @@ import unittest
 
 from PIL import Image
 
-from prepare_images import prepare_directory, prepare_image
+from workbench.preprocessing import prepare_directory, prepare_image
 
 
 class PrepareImagesTests(unittest.TestCase):

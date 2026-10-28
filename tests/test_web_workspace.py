@@ -10,8 +10,8 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from web_app import create_app
-from web_store import Workspace
+from workbench.api import create_app
+from workbench.store import Workspace
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -127,7 +127,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             self.assertIn("验证集正常图", response.json()["detail"])
             self.assertEqual(client.get("/api/jobs").json(), [])
-            with patch("camera_session.CameraSession.capture") as camera:
+            with patch("workbench.camera_session.CameraSession.capture") as camera:
                 response = client.post("/api/camera/capture", headers={"origin": "https://outside.example"},
                                        json={"tool_type": "type_01", "specimen_id": "good_01", "quality": "good"})
                 self.assertEqual(response.status_code, 403)
@@ -135,7 +135,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_camera_failure_surfaces_error_and_does_not_register_image(self):
         with TestClient(create_app(self.root)) as client:
-            with patch("camera_session.CameraSession.capture", side_effect=RuntimeError("相机返回不完整图像")):
+            with patch("workbench.camera_session.CameraSession.capture", side_effect=RuntimeError("相机返回不完整图像")):
                 response = client.post("/api/camera/capture", json={"tool_type": "type_01", "specimen_id": "good_01", "quality": "good"})
             self.assertEqual(response.status_code, 503)
             self.assertIn("不完整", response.json()["detail"])
@@ -144,7 +144,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_training_launch_failure_is_persisted_as_failure_with_manifest(self):
         self.ready_workspace()
         with TestClient(create_app(self.root)) as client:
-            with patch("jobs.subprocess.Popen", side_effect=RuntimeError("外部训练进程启动失败")):
+            with patch("workbench.jobs.subprocess.Popen", side_effect=RuntimeError("外部训练进程启动失败")):
                 response = client.post("/api/jobs", json={"tool_type": "type_01"})
                 self.assertEqual(response.status_code, 200)
                 job_id = response.json()["id"]
@@ -159,14 +159,14 @@ class WorkspaceTests(unittest.TestCase):
             manifest = client.get(f"/api/jobs/{job_id}/artifact", params={"name": "manifest.json"}).json()
             self.assertEqual(len(manifest["images"]), 3)
             self.assertEqual(manifest["settings"]["model"], "patchcore")
-            self.assertEqual(client.get(f"/api/jobs/{job_id}/artifact", params={"name": "../../web_app.py"}).status_code, 404)
+            self.assertEqual(client.get(f"/api/jobs/{job_id}/artifact", params={"name": "../../app.py"}).status_code, 404)
         with TestClient(create_app(self.root)) as client:
             self.assertEqual(client.get("/api/jobs").json()[0]["status"], "failed")
 
     def test_upload_keeps_view_and_requires_review_without_opening_camera(self):
         content = BytesIO()
         Image.new("L", (60, 40), 128).save(content, format="PNG")
-        with patch("camera_session.load_sdk") as sdk, TestClient(create_app(self.root)) as client:
+        with patch("workbench.camera_session.load_sdk") as sdk, TestClient(create_app(self.root)) as client:
             self.assertFalse(client.get("/api/camera/status").json()["connected"])
             response = client.post("/api/images/upload", params={"tool_type": "type_01", "specimen_id": "good_01",
                                    "quality": "good", "view": "side"}, content=content.getvalue())
@@ -192,12 +192,16 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_detection_rejects_wrong_view_and_experimental_classification(self):
         self.write_model_job(view="side")
+        self.write_model_job(job_id="top_model")
         image_id = self.add_image("good_01", "good")
-        with TestClient(create_app(self.root)) as client, patch("jobs.subprocess.Popen") as process:
+        with TestClient(create_app(self.root)) as client, patch("workbench.jobs.subprocess.Popen") as process:
             response = client.post("/api/detections", json={"anomaly_job": "model", "image_id": image_id})
             self.assertEqual(response.status_code, 422)
             self.assertIn("拍摄面", response.json()["detail"])
             self.assertEqual(client.post("/api/detections", json={"anomaly_job": "model", "image_id": "missing"}).status_code, 404)
+            response = client.post("/api/detections", json={"anomaly_job": "top_model", "classifier_job": "model", "image_id": image_id})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn("未校准", response.json()["detail"])
             process.assert_not_called()
 
     def test_review_is_separate_from_model_result_and_survives_restart(self):

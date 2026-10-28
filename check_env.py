@@ -39,7 +39,7 @@ def main():
     if args.device == "cuda":
         report["显卡"] = torch.cuda.get_device_name(0)
     if args.check_sdk:
-        from camera import DEFAULT_SDK_ROOT, load_sdk
+        from workbench.camera import DEFAULT_SDK_ROOT, load_sdk
 
         gx = load_sdk(DEFAULT_SDK_ROOT)
         report["GalaxySDK Python 接口"] = gx.__version__

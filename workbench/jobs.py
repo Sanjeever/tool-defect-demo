@@ -9,10 +9,10 @@ from uuid import uuid4
 
 from PIL import Image
 
-from prepare_images import prepare_image
+from .preprocessing import prepare_image
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class Jobs:
@@ -89,7 +89,7 @@ class Jobs:
                 if job["kind"] == "train":
                     count = self.workspace.export(plan, directory, settings["roi"])
                     log.write(f"已预处理 {count} 张图片，输入为灰度三通道 256×256\n")
-                    script = "anomaly.py" if settings["model"] == "patchcore" else "classifier.py"
+                    script = "workbench.anomaly" if settings["model"] == "patchcore" else "workbench.classifier"
                     command = [script, "train", "--data", str(directory / "prepared"), "--output", str(directory / settings["model"]),
                                "--batch-size", str(settings["batch_size"])]
                     if settings["model"] == "classifier":
@@ -100,13 +100,13 @@ class Jobs:
                     with Image.open(directory / "source.png") as source:
                         prepare_image(source, settings["roi"], 256).save(directory / "input.png")
                     model = self.model(settings["anomaly_job"], "patchcore")
-                    command = ["anomaly.py", "predict", "--checkpoint", str(self.root / model["id"] / model["checkpoint"]),
+                    command = ["workbench.anomaly", "predict", "--checkpoint", str(self.root / model["id"] / model["checkpoint"]),
                                "--source", str(directory / "input.png"), "--output", str(directory / "predictions")]
                     if settings["classifier_job"]:
                         classifier = self.model(settings["classifier_job"], "classifier")
                         command += ["--classifier", str(self.root / classifier["id"] / classifier["checkpoint"]),
                                     "--min-confidence", str(settings["min_confidence"])]
-                command = [sys.executable, "-u", str(ROOT / command[0]), *command[1:], "--device", settings["device"]]
+                command = [sys.executable, "-u", "-m", command[0], *command[1:], "--device", settings["device"]]
                 log.flush()
                 with self.lock:
                     if self.get(job_id)["status"] == "stopping":

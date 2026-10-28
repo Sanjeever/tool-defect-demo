@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from camera_session import CameraSession
+from workbench.camera_session import CameraSession
 
 
 class CameraSessionTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class CameraSessionTests(unittest.TestCase):
 
     def test_open_is_explicit_and_disconnect_restores_and_releases(self):
         gx, device, enums = self.sdk()
-        with patch("camera_session.load_sdk", return_value=gx) as load:
+        with patch("workbench.camera_session.load_sdk", return_value=gx) as load:
             session = CameraSession()
             self.assertFalse(session.status()["connected"])
             load.assert_not_called()
@@ -38,7 +38,7 @@ class CameraSessionTests(unittest.TestCase):
 
     def test_bad_frame_returns_buffer_without_producing_image(self):
         gx, device, _ = self.sdk()
-        with patch("camera_session.load_sdk", return_value=gx):
+        with patch("workbench.camera_session.load_sdk", return_value=gx):
             session = CameraSession()
             session.connect("sample", Path("sdk"), 20000)
             stream = device.data_stream[0]
@@ -53,7 +53,7 @@ class CameraSessionTests(unittest.TestCase):
     def test_capture_copies_pixels_before_buffer_is_returned(self):
         gx, device, _ = self.sdk()
         pixels = np.full((4, 4), 128, dtype=np.uint8)
-        with patch("camera_session.load_sdk", return_value=gx):
+        with patch("workbench.camera_session.load_sdk", return_value=gx):
             session = CameraSession()
             session.connect("sample", Path("sdk"), 20000)
             stream = device.data_stream[0]
@@ -69,7 +69,7 @@ class CameraSessionTests(unittest.TestCase):
     def test_failed_stream_start_releases_device(self):
         gx, device, _ = self.sdk()
         device.stream_on.side_effect = RuntimeError("流启动失败")
-        with patch("camera_session.load_sdk", return_value=gx):
+        with patch("workbench.camera_session.load_sdk", return_value=gx):
             session = CameraSession()
             with self.assertRaisesRegex(RuntimeError, "流启动失败"):
                 session.connect("sample", Path("sdk"), 20000)

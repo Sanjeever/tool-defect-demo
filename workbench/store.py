@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from PIL import Image
 
-from prepare_images import IMAGE_SUFFIXES, prepare_directory
+from .preprocessing import IMAGE_SUFFIXES, prepare_directory
 
 
 def component(value):

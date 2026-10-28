@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from prepare_images import check_prepared_images
+from .preprocessing import check_prepared_images
 
 
 def check_classes(root, split, expected=None):
@@ -43,7 +43,7 @@ def load_classifier(checkpoint):
 def classify_image(model, path, device, min_confidence):
     with Image.open(path) as image:
         if image.size != (256, 256):
-            raise ValueError(f"请先使用 prepare_images.py 生成 256×256 图片：{path}")
+            raise ValueError(f"请先运行 uv run python -m workbench.preprocessing 生成 256×256 图片：{path}")
         result = model.predict(image.convert("RGB"), imgsz=256, device=yolo_device(device), verbose=False)[0]
     confidence = float(result.probs.top1conf.item())
     category = result.names[result.probs.top1]

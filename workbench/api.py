@@ -16,13 +16,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 
-from camera import DEFAULT_SDK_ROOT
-from camera_session import CameraSession
-from jobs import Jobs
-from web_store import Workspace, component
+from .camera import DEFAULT_SDK_ROOT
+from .camera_session import CameraSession
+from .jobs import Jobs
+from .store import Workspace, component
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class CameraSettings(BaseModel):

@@ -3,7 +3,7 @@ import time
 
 from PIL import Image
 
-from camera import load_sdk
+from .camera import load_sdk
 
 
 class CameraSession:

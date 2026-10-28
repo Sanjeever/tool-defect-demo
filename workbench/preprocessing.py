@@ -24,7 +24,7 @@ def check_prepared_images(directory):
     for path in files:
         with Image.open(path) as image:
             if image.size != (256, 256):
-                raise ValueError(f"请先使用 prepare_images.py 生成 256×256 图片：{path}")
+                raise ValueError(f"请先运行 uv run python -m workbench.preprocessing 生成 256×256 图片：{path}")
     return files
 
 
