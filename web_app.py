@@ -1,24 +1,23 @@
 import argparse
 from contextlib import asynccontextmanager
 from datetime import datetime
-import json
-import os
+from io import BytesIO
 from pathlib import Path
-import subprocess
-import sys
-import threading
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 
 from camera import DEFAULT_SDK_ROOT
-from web_store import Workspace
+from camera_session import CameraSession
+from jobs import Jobs
+from web_store import Workspace, component
 
 
 ROOT = Path(__file__).resolve().parent
@@ -27,145 +26,72 @@ ROOT = Path(__file__).resolve().parent
 class CameraSettings(BaseModel):
     sn: str = Field(default="GL0180040948", min_length=1, max_length=80)
     packet_delay: int = Field(default=20000, ge=0, le=1000000)
-    sdk_root: str = str(DEFAULT_SDK_ROOT)
-
-
-class CaptureSettings(CameraSettings):
-    tool_type: str
-    specimen_id: str
-    quality: Literal["good", "defect", "unknown"]
+    sdk_root: Path = DEFAULT_SDK_ROOT
 
 
 class SpecimenSettings(BaseModel):
     tool_type: str
     specimen_id: str
-    quality: Literal["good", "defect", "unknown"]
-    split: Literal["unassigned", "train", "val", "test"]
+    quality: Literal["good", "defect", "unknown"] = "unknown"
+    split: Literal["unassigned", "train", "val", "test"] = "unassigned"
     category: str = ""
 
 
-class Box(BaseModel):
-    x: int = Field(ge=0)
-    y: int = Field(ge=0)
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-    label: str = Field(min_length=1, max_length=80)
+class CaptureSettings(BaseModel):
+    tool_type: str
+    specimen_id: str
+    quality: Literal["good", "defect", "unknown"] = "unknown"
+    view: str = "top"
 
 
 class ImageSettings(BaseModel):
     included: bool
-    boxes: list[Box] = Field(default_factory=list, max_length=100)
 
 
-class TrainSettings(BaseModel):
+class RecipeSettings(BaseModel):
     tool_type: str
+    view: str = "top"
+    roi: tuple[int, int, int, int] | None = None
+
+
+class TrainSettings(RecipeSettings):
     model: Literal["patchcore", "classifier"] = "patchcore"
+    experimental: bool = False
     device: Literal["cuda", "cpu"] = "cuda"
     batch_size: int = Field(default=4, ge=1, le=64)
     epochs: int = Field(default=30, ge=1, le=1000)
-    roi: tuple[int, int, int, int] | None = None
+
+
+class DetectSettings(BaseModel):
+    anomaly_job: str
+    classifier_job: str | None = None
+    device: Literal["cuda", "cpu"] = "cuda"
+    min_confidence: float = Field(default=0.7, ge=0, le=1)
+    image_id: str | None = None
+    camera: bool = False
+
+
+class ReviewSettings(BaseModel):
+    quality: Literal["good", "defect", "unknown"]
+    note: str = Field(default="", max_length=500)
 
 
 def create_app(root=ROOT):
     root = Path(root).resolve()
     workspace = Workspace(root)
-    job_root = root / "outputs/web/jobs"
-    preview_root = root / "outputs/web/preview"
-    camera_lock = threading.Lock()
-    jobs_lock = threading.Lock()
-    jobs = {}
-    processes = {}
-    threads = []
-    for path in sorted(job_root.glob("*/job.json")):
-        job = json.loads(path.read_text(encoding="utf-8"))
-        if job["status"] in {"running", "stopping"}:
-            job["status"] = "interrupted"
-            job["error"] = "服务退出前任务未完成，请检查日志后重新运行"
-            path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-        jobs[job["id"]] = job
-
-    def persist(job):
-        directory = job_root / job["id"]
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / "job.json"
-        temporary = directory / "job.json.tmp"
-        temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(target)
-
-    def update_job(job_id, **values):
-        with jobs_lock:
-            jobs[job_id].update(values)
-            persist(jobs[job_id])
-
-    def run_job(job_id, plan, settings):
-        directory = job_root / job_id
-        try:
-            (directory / "manifest.json").write_text(
-                json.dumps({"settings": settings.model_dump(), "images": plan["images"]}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            with (directory / "run.log").open("w", encoding="utf-8") as log:
-                count = workspace.export(plan, directory, settings.roi)
-                log.write(f"已预处理 {count} 张图片，输入为 256×256\n")
-                log.flush()
-                model_dir = directory / settings.model
-                script = "anomaly.py" if settings.model == "patchcore" else "classifier.py"
-                command = [sys.executable, "-u", str(ROOT / script), "train", "--data", str(directory / "prepared"),
-                           "--output", str(model_dir), "--device", settings.device, "--batch-size", str(settings.batch_size)]
-                if settings.model == "classifier":
-                    command.extend(["--epochs", str(settings.epochs)])
-                with jobs_lock:
-                    if jobs[job_id]["status"] == "stopping":
-                        jobs[job_id]["status"] = "cancelled"
-                        jobs[job_id]["phase"] = "finished"
-                        persist(jobs[job_id])
-                        return
-                    process = subprocess.Popen(
-                        command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                        encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-                        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
-                    )
-                    processes[job_id] = process
-                    jobs[job_id]["phase"] = "training"
-                    persist(jobs[job_id])
-                return_code = process.wait()
-            with jobs_lock:
-                stopped = jobs[job_id]["status"] == "stopping"
-            checkpoint = model_dir / ("model.ckpt" if settings.model == "patchcore" else "weights/best.pt")
-            if stopped:
-                update_job(job_id, status="cancelled", phase="finished", return_code=return_code)
-            elif return_code != 0:
-                update_job(job_id, status="failed", phase="finished", return_code=return_code, error="训练失败，请查看日志")
-            elif not checkpoint.is_file():
-                raise RuntimeError("训练进程退出，但未找到预期模型文件")
-            else:
-                update_job(job_id, status="succeeded", phase="finished", checkpoint=checkpoint.relative_to(directory).as_posix(), return_code=0)
-        except Exception as error:
-            with (directory / "run.log").open("a", encoding="utf-8") as log:
-                log.write(f"\n任务失败：{type(error).__name__}: {error}\n")
-            with jobs_lock:
-                stopped = jobs[job_id]["status"] == "stopping"
-            update_job(job_id, status="cancelled" if stopped else "failed", phase="finished", error=str(error))
-        finally:
-            with jobs_lock:
-                processes.pop(job_id, None)
+    camera = CameraSession()
+    jobs = Jobs(root, workspace)
 
     @asynccontextmanager
     async def lifespan(app):
         yield
-        with jobs_lock:
-            for job_id, job in jobs.items():
-                if job["status"] == "running":
-                    job["status"] = "stopping"
-                    persist(job)
-            for process in processes.values():
-                if process.poll() is None:
-                    process.terminate()
-        for thread in threads:
-            thread.join(timeout=10)
+        try:
+            jobs.close()
+        finally:
+            camera.disconnect()
 
     app = FastAPI(title="刀具视觉工作台", lifespan=lifespan)
-    app.state.workspace = workspace
+    app.state.workspace, app.state.camera, app.state.jobs = workspace, camera, jobs
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
@@ -180,30 +106,17 @@ def create_app(root=ROOT):
     async def value_error(request, error):
         return JSONResponse({"detail": str(error)}, status_code=422)
 
+    @app.exception_handler(UnidentifiedImageError)
+    async def image_error(request, error):
+        return JSONResponse({"detail": "无法读取图片，请选择 PNG、JPEG、BMP 或 TIFF 图片"}, status_code=422)
+
     @app.exception_handler(FileNotFoundError)
     async def file_error(request, error):
         return JSONResponse({"detail": str(error)}, status_code=404)
 
-    def camera_command(settings, output=None):
-        if not camera_lock.acquire(blocking=False):
-            raise HTTPException(409, "相机正在采集，请稍后再试")
-        try:
-            command = [sys.executable, str(ROOT / "camera.py"), "--sdk-root", settings.sdk_root]
-            if output is None:
-                command.append("--list")
-            else:
-                command.extend(["--sn", settings.sn, "--output", str(output), "--packet-delay", str(settings.packet_delay)])
-            try:
-                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30,
-                                        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-                                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            except subprocess.TimeoutExpired as error:
-                raise HTTPException(504, "相机操作超时，请检查设备连接与占用情况") from error
-            if result.returncode:
-                raise HTTPException(503, result.stderr.strip() or result.stdout.strip())
-            return result.stdout
-        finally:
-            camera_lock.release()
+    @app.exception_handler(RuntimeError)
+    async def runtime_error(request, error):
+        return JSONResponse({"detail": str(error)}, status_code=503)
 
     @app.get("/api/state")
     def state():
@@ -220,120 +133,179 @@ def create_app(root=ROOT):
 
     @app.patch("/api/images/{image_id}")
     def update_image(image_id: str, settings: ImageSettings):
-        workspace.update_image(image_id, settings.included, [box.model_dump() for box in settings.boxes])
+        workspace.update_image(image_id, settings.included, workspace.image(image_id)["boxes"])
         return {"saved": True}
 
     @app.get("/api/images/{image_id}/file")
     def image_file(image_id: str):
-        return FileResponse(workspace.image_path(image_id), headers={"Cache-Control": "no-cache"})
+        return FileResponse(workspace.image_path(image_id))
 
-    @app.post("/api/camera/devices")
-    def devices(settings: CameraSettings):
-        return json.loads(camera_command(settings))
+    async def uploaded_image(request):
+        body = await request.body()
+        if len(body) > 25 * 1024 * 1024:
+            raise ValueError("每张图片不能超过 25 MB")
+        with Image.open(BytesIO(body)) as image:
+            return ImageOps.exif_transpose(image).convert("RGB")
+
+    def register_image(image, settings):
+        component(settings.view)
+        workspace.ensure_specimen(settings.tool_type, settings.specimen_id, settings.quality)
+        name = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}.png"
+        path = root / "data/raw/pilot" / settings.tool_type / settings.specimen_id / settings.view / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path)
+        image_id, _ = workspace.add_image(path, settings.tool_type, settings.specimen_id, settings.view)
+        return {"id": image_id, "path": path.relative_to(root).as_posix()}
+
+    @app.post("/api/images/upload")
+    async def upload(request: Request, tool_type: str, specimen_id: str, quality: Literal["good", "defect", "unknown"], view: str = "top"):
+        settings = CaptureSettings(tool_type=tool_type, specimen_id=specimen_id, quality=quality, view=view)
+        return register_image(await uploaded_image(request), settings)
+
+    @app.get("/api/camera/status")
+    def camera_status():
+        return camera.status()
+
+    @app.post("/api/camera/connect")
+    def connect_camera(settings: CameraSettings):
+        try:
+            return camera.connect(settings.sn, settings.sdk_root, settings.packet_delay)
+        except ValueError:
+            raise
+        except Exception as error:
+            raise HTTPException(503, f"连接失败：{error}") from error
+
+    @app.post("/api/camera/disconnect")
+    def disconnect_camera():
+        return camera.disconnect()
 
     @app.post("/api/camera/preview")
-    def preview(settings: CameraSettings):
-        preview_root.mkdir(parents=True, exist_ok=True)
-        path = preview_root / f"{uuid4().hex}.png"
-        try:
-            camera_command(settings, path)
-            return Response(path.read_bytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
-        finally:
-            path.unlink(missing_ok=True)
+    def preview():
+        output = BytesIO()
+        camera.capture().save(output, format="PNG")
+        return Response(output.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/camera/capture")
     def capture(settings: CaptureSettings):
-        workspace.ensure_specimen(settings.tool_type, settings.specimen_id, settings.quality)
-        name = f"top_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:6]}.png"
-        path = root / "data/raw/pilot" / settings.tool_type / settings.specimen_id / name
-        camera_command(settings, path)
-        image_id, _ = workspace.add_image(path, settings.tool_type, settings.specimen_id)
-        return {"id": image_id, "path": path.relative_to(root).as_posix()}
+        component(settings.tool_type)
+        component(settings.specimen_id)
+        component(settings.view)
+        return register_image(camera.capture(), settings)
+
+    @app.get("/api/recipe")
+    def recipe(tool_type: str, view: str = "top"):
+        return workspace.recipe(tool_type, view)
+
+    @app.put("/api/recipe")
+    def save_recipe(settings: RecipeSettings):
+        workspace.save_recipe(**settings.model_dump())
+        return workspace.recipe(settings.tool_type, settings.view)
 
     @app.get("/api/dataset")
-    def dataset(tool_type: str, model: Literal["patchcore", "classifier"] = "patchcore"):
-        plan = workspace.plan(tool_type, model)
+    def dataset(tool_type: str, model: Literal["patchcore", "classifier"] = "patchcore", view: str = "top", experimental: bool = False):
+        plan = workspace.plan(tool_type, model, view, experimental)
         return {key: value for key, value in plan.items() if key != "images"}
 
     @app.get("/api/jobs")
     def list_jobs():
-        with jobs_lock:
-            return json.loads(json.dumps(sorted(jobs.values(), key=lambda job: job["created_at"], reverse=True)))
+        return jobs.list()
 
     @app.post("/api/jobs")
     def start_job(settings: TrainSettings):
-        plan = workspace.plan(settings.tool_type, settings.model)
+        plan = workspace.plan(settings.tool_type, settings.model, settings.view, settings.experimental)
         if not plan["ready"]:
-            raise HTTPException(422, "；".join(plan["issues"]))
+            raise ValueError("；".join(plan["issues"]))
         if settings.roi is not None:
             left, top, right, bottom = settings.roi
             if any(not (0 <= left < right <= image["width"] and 0 <= top < bottom <= image["height"]) for image in plan["images"]):
-                raise HTTPException(422, "统一 ROI 超出部分图片范围或尺寸无效")
+                raise ValueError("检测区域超出部分图片范围或尺寸无效")
+        values = settings.model_dump(mode="json")
+        values["preprocessing"] = "gray-pad-256-v1"
+        values["source_size"] = [plan["images"][0]["width"], plan["images"][0]["height"]]
         plan["model"] = settings.model
-        with jobs_lock:
-            if any(job["status"] in {"running", "stopping"} for job in jobs.values()):
-                raise HTTPException(409, "已有训练任务运行，请等待完成或先停止")
-            job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid4().hex[:6]
-            job = {"id": job_id, "status": "running", "phase": "preparing", "created_at": datetime.now().isoformat(timespec="seconds"),
-                   "tool_type": settings.tool_type, "model": settings.model, "device": settings.device, "image_count": len(plan["images"]),
-                   "error": "", "checkpoint": None}
-            jobs[job_id] = job
-            persist(job)
-            thread = threading.Thread(target=run_job, args=(job_id, plan, settings), daemon=True)
-            threads.append(thread)
-            thread.start()
-            return dict(job)
+        return jobs.start("train", values, plan=plan)
 
-    def known_job(job_id):
-        with jobs_lock:
-            if job_id not in jobs:
-                raise HTTPException(404, "训练任务不存在")
-            return dict(jobs[job_id])
+    def detect(settings, image, source_item=None):
+        model = jobs.model(settings.anomaly_job, "patchcore")
+        if source_item and (source_item["tool_type"], source_item["view"]) != (model["tool_type"], model["view"]):
+            raise ValueError("图片型号或拍摄面与模型不匹配")
+        if list(image.size) != model["settings"]["source_size"]:
+            raise ValueError(f"图片尺寸与模型采集尺寸不一致，需要 {model['settings']['source_size']}")
+        if settings.classifier_job:
+            if model["experimental"]:
+                raise ValueError("未校准模型不触发缺陷分类")
+            classifier = jobs.model(settings.classifier_job, "classifier")
+            for field in ("tool_type", "view", "roi", "source_size", "preprocessing"):
+                if classifier["settings"][field] != model["settings"][field]:
+                    raise ValueError("分类模型与异常模型的型号、拍摄面或预处理设置不一致")
+        values = {**model["settings"], **settings.model_dump(mode="json")}
+        return jobs.start("detect", values, image=image)
+
+    @app.post("/api/detections")
+    def detect_image(settings: DetectSettings):
+        if settings.camera == bool(settings.image_id):
+            raise ValueError("请选择一张样本图片或相机拍照")
+        jobs.model(settings.anomaly_job, "patchcore")
+        if settings.camera:
+            return detect(settings, camera.capture())
+        workspace.image_path(settings.image_id)
+        item = next(item for item in workspace.state()["images"] if item["id"] == settings.image_id)
+        with Image.open(workspace.image_path(settings.image_id)) as image:
+            return detect(settings, image.copy(), item)
+
+    @app.post("/api/detections/upload")
+    async def detect_upload(request: Request, anomaly_job: str, classifier_job: str | None = None,
+                            device: Literal["cuda", "cpu"] = "cuda", min_confidence: float = 0.7):
+        settings = DetectSettings(anomaly_job=anomaly_job, classifier_job=classifier_job, device=device, min_confidence=min_confidence)
+        return detect(settings, await uploaded_image(request))
+
+    @app.post("/api/jobs/{job_id}/review")
+    def review(job_id: str, settings: ReviewSettings):
+        job = jobs.get(job_id)
+        if job.get("kind") != "detect" or job["status"] != "succeeded":
+            raise ValueError("请选择已完成的检测结果")
+        jobs.update(job_id, review={**settings.model_dump(), "at": datetime.now().isoformat(timespec="seconds")})
+        return jobs.get(job_id)
 
     @app.get("/api/jobs/{job_id}/log")
     def job_log(job_id: str):
-        known_job(job_id)
-        path = job_root / job_id / "run.log"
+        jobs.get(job_id)
+        path = jobs.root / job_id / "run.log"
         if not path.exists():
             return {"text": "正在准备数据…"}
         with path.open("rb") as stream:
             stream.seek(max(0, path.stat().st_size - 64000))
-            content = stream.read().decode("utf-8", errors="replace")
-        return {"text": content}
+            return {"text": stream.read().decode("utf-8", errors="replace")}
 
     @app.post("/api/jobs/{job_id}/stop")
     def stop_job(job_id: str):
-        known_job(job_id)
-        with jobs_lock:
-            if jobs[job_id]["status"] in {"running", "stopping"}:
-                jobs[job_id]["status"] = "stopping"
-                persist(jobs[job_id])
-                process = processes.get(job_id)
-                if process and process.poll() is None:
-                    process.terminate()
-        return {"stopping": True}
+        jobs.stop(job_id)
+        return jobs.get(job_id)
 
     @app.get("/api/jobs/{job_id}/artifact")
     def artifact(job_id: str, name: str):
-        job = known_job(job_id)
-        if name not in {"manifest.json", "run.log", job["checkpoint"]}:
-            raise HTTPException(404, "文件不存在")
-        path = job_root / job_id / name
+        job = jobs.get(job_id)
+        if name not in {"manifest.json", "run.log", "source.png", "input.png", "predictions/input.heatmap.png", "result.json", job["checkpoint"]}:
+            raise FileNotFoundError("文件不存在")
+        path = jobs.root / job_id / name
         if not path.is_file():
-            raise HTTPException(404, "文件尚未生成")
+            raise FileNotFoundError("文件尚未生成")
         return FileResponse(path, filename=path.name)
 
-    app.mount("/static", StaticFiles(directory=ROOT / "web"), name="static")
+    app.mount("/assets", StaticFiles(directory=ROOT / "web/dist/assets", check_dir=False), name="assets")
 
     @app.get("/")
     def index():
-        return FileResponse(ROOT / "web/index.html")
+        path = ROOT / "web/dist/index.html"
+        if not path.exists():
+            raise HTTPException(503, "前端尚未构建，请在 web 目录运行 pnpm install 和 pnpm build")
+        return FileResponse(path, headers={"Cache-Control": "no-cache"})
 
     return app
 
 
 def main():
-    parser = argparse.ArgumentParser(description="本机刀具视觉工作台：拍摄、标注与训练")
+    parser = argparse.ArgumentParser(description="本机刀具视觉工作台：采集、训练与检测")
     parser.add_argument("--port", type=int, default=8765, help="本机监听端口，默认 8765")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:

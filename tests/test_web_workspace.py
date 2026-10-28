@@ -1,5 +1,6 @@
+from io import BytesIO
+import json
 from pathlib import Path
-import subprocess
 from tempfile import TemporaryDirectory
 import time
 import unittest
@@ -125,7 +126,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             self.assertIn("验证集正常图", response.json()["detail"])
             self.assertEqual(client.get("/api/jobs").json(), [])
-            with patch("web_app.subprocess.run") as camera:
+            with patch("camera_session.CameraSession.capture") as camera:
                 response = client.post("/api/camera/capture", headers={"origin": "https://outside.example"},
                                        json={"tool_type": "type_01", "specimen_id": "good_01", "quality": "good"})
                 self.assertEqual(response.status_code, 403)
@@ -133,7 +134,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_camera_failure_surfaces_error_and_does_not_register_image(self):
         with TestClient(create_app(self.root)) as client:
-            with patch("web_app.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "相机返回不完整图像")):
+            with patch("camera_session.CameraSession.capture", side_effect=RuntimeError("相机返回不完整图像")):
                 response = client.post("/api/camera/capture", json={"tool_type": "type_01", "specimen_id": "good_01", "quality": "good"})
             self.assertEqual(response.status_code, 503)
             self.assertIn("不完整", response.json()["detail"])
@@ -142,7 +143,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_training_launch_failure_is_persisted_as_failure_with_manifest(self):
         self.ready_workspace()
         with TestClient(create_app(self.root)) as client:
-            with patch("web_app.subprocess.Popen", side_effect=RuntimeError("外部训练进程启动失败")):
+            with patch("jobs.subprocess.Popen", side_effect=RuntimeError("外部训练进程启动失败")):
                 response = client.post("/api/jobs", json={"tool_type": "type_01"})
                 self.assertEqual(response.status_code, 200)
                 job_id = response.json()["id"]
@@ -160,6 +161,54 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(client.get(f"/api/jobs/{job_id}/artifact", params={"name": "../../web_app.py"}).status_code, 404)
         with TestClient(create_app(self.root)) as client:
             self.assertEqual(client.get("/api/jobs").json()[0]["status"], "failed")
+
+    def test_upload_keeps_view_and_requires_review_without_opening_camera(self):
+        content = BytesIO()
+        Image.new("L", (60, 40), 128).save(content, format="PNG")
+        with patch("camera_session.load_sdk") as sdk, TestClient(create_app(self.root)) as client:
+            self.assertFalse(client.get("/api/camera/status").json()["connected"])
+            response = client.post("/api/images/upload", params={"tool_type": "type_01", "specimen_id": "good_01",
+                                   "quality": "good", "view": "side"}, content=content.getvalue())
+            self.assertEqual(response.status_code, 200)
+            item = client.get("/api/state").json()["images"][0]
+            self.assertEqual(item["view"], "side")
+            self.assertFalse(item["included"])
+            self.assertEqual(client.get(f"/api/images/{item['id']}/file").status_code, 200)
+            self.assertEqual(client.post("/api/camera/preview").status_code, 422)
+            sdk.assert_not_called()
+
+    def write_model_job(self, job_id="model", experimental=True, view="top"):
+        directory = self.root / "outputs/web/jobs" / job_id
+        directory.mkdir(parents=True)
+        (directory / "model.ckpt").write_bytes(b"model-boundary-fixture")
+        job = {"id": job_id, "kind": "train", "status": "succeeded", "model": "patchcore", "tool_type": "type_01",
+               "view": view, "experimental": experimental, "checkpoint": "model.ckpt", "created_at": "2026-10-28",
+               "settings": {"tool_type": "type_01", "view": view, "experimental": experimental, "model": "patchcore",
+                            "source_size": [60, 40], "roi": None, "preprocessing": "gray-pad-256-v1"}}
+        (directory / "job.json").write_text(json.dumps(job), encoding="utf-8")
+
+    def test_detection_rejects_wrong_view_and_experimental_classification(self):
+        self.write_model_job(view="side")
+        image_id = self.add_image("good_01", "good")
+        with TestClient(create_app(self.root)) as client, patch("jobs.subprocess.Popen") as process:
+            response = client.post("/api/detections", json={"anomaly_job": "model", "image_id": image_id})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn("拍摄面", response.json()["detail"])
+            self.assertEqual(client.post("/api/detections", json={"anomaly_job": "model", "image_id": "missing"}).status_code, 404)
+            process.assert_not_called()
+
+    def test_review_is_separate_from_model_result_and_survives_restart(self):
+        directory = self.root / "outputs/web/jobs/result"
+        directory.mkdir(parents=True)
+        job = {"id": "result", "kind": "detect", "status": "succeeded", "checkpoint": None,
+               "result": {"label": "未校准", "anomaly_score": 1.0}}
+        (directory / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        with TestClient(create_app(self.root)) as client:
+            response = client.post("/api/jobs/result/review", json={"quality": "defect", "note": "人工确认"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["result"], job["result"])
+        with TestClient(create_app(self.root)) as client:
+            self.assertEqual(client.get("/api/jobs").json()[0]["review"]["quality"], "defect")
 
 
 if __name__ == "__main__":
