@@ -14,6 +14,7 @@ Anomalib PatchCore 负责正常／异常判断与热力图，YOLO 分类模型�
 - 安装环境用 `uv sync --locked`，工作台入口为 `uv run python app.py`，离线入口使用 `uv run python -m workbench.模块名`。
 - 前端使用 React、Vite、Tailwind CSS、HeroUI 和 pnpm，代码位于 `web/`，构建使用 `pnpm build`。
 - 界面按拍摄、筛选、创建模型、检测四步组织。首次采用未分组好件时可加入训练组，不覆盖已有验证、测试分组；高级参数按需展开。
+- 界面使用一屏紧凑布局，不出现页面或面板滚动条；样本与日志分页，设置与记录通过面板切换，确保内容和操作可访问。
 - Python 依赖写入 `pyproject.toml`，同步提交 `uv.lock`。
 - PyTorch 使用项目指定的 CUDA 12.4 索引，升级前核对显卡驱动与 torchvision 配套版本。
 - YOLO 使用官方 `ultralytics-opencv-headless` 发行包，导入名称仍为 `ultralytics`。
