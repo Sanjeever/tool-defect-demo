@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { Button } from '@heroui/react'
 import { ArrowRight, Camera, ImagePlus, PlugZap } from 'lucide-react'
-import { api, imageUrl, query, response, type PageProps, type Quality } from './api'
+import { api, query, response, type PageProps, type Quality } from './api'
 
 export default function Collect({ tool, view, data, camera, busy, run, navigate }: PageProps) {
   const samples = data.images.filter(i => i.tool_type === tool && i.view === view)
@@ -37,11 +37,11 @@ export default function Collect({ tool, view, data, camera, busy, run, navigate 
       <section className="capture-form panel"><h2>现在拍哪把刀具？</h2>
         <div className="quality-picker" role="radiogroup" aria-label="当前刀具好坏">{(['good', 'defect'] as const).map(value => <label key={value} className={quality === value ? 'quality-option selected' : 'quality-option'}>
           <input type="radio" name="quality" checked={quality === value} onChange={() => switchQuality(value)} />{value === 'good' ? '正常好件' : '缺陷坏件'}</label>)}</div>
-        <label className="field">这把刀具的编号<input aria-label="实物编号" value={specimen} maxLength={80} list="specimen-ids" onChange={e => {
+        <label className="field">实物编号<input aria-label="实物编号" value={specimen} maxLength={80} list="specimen-ids" onChange={e => {
           setSpecimen(e.target.value); const existing = specimens.find(s => s.specimen_id === e.target.value); if (existing) setQuality(existing.quality)
-        }} /><datalist id="specimen-ids">{specimens.map(s => <option key={s.specimen_id} value={s.specimen_id} />)}</datalist><span className="field-help">同一把刀具重复拍摄，保持编号不变。</span></label>
+        }} /><datalist id="specimen-ids">{specimens.map(s => <option key={s.specimen_id} value={s.specimen_id} />)}</datalist><span className="field-help">同一把刀具保持编号不变。</span></label>
         <div className="capture-count" aria-live="polite"><strong>{own.length}</strong><span>张已保存到「{specimen || '当前刀具'}」</span></div>
-        <p className="capture-tip">每次取下再放回，先拍 20～30 张。保持光线和朝向一致。</p>
+        <p className="capture-tip">每件先拍 20～30 张，取下再放回，保持光线和朝向一致。</p>
         <Button fullWidth isDisabled={!camera.connected || !!camera.error || busy || !specimen.trim()} onPress={() => void capture()}><Camera size={17} />{busy ? '处理中…' : '拍照保存'}</Button>
         <Button fullWidth variant="outline" isDisabled={busy || !specimen.trim()} onPress={() => upload.current?.click()}><ImagePlus size={16} />导入已有图片</Button>
         <input ref={upload} type="file" hidden multiple accept="image/png,image/jpeg,image/bmp,image/tiff" aria-label="导入样本图片" onChange={e => {
@@ -51,6 +51,5 @@ export default function Collect({ tool, view, data, camera, busy, run, navigate 
     </div>
     <div className="capture-bottom"><div><h2>本组已拍 {samples.length} 张</h2><span className="muted">好件 {samples.filter(i => i.quality === 'good').length} 张 · 坏件 {samples.filter(i => i.quality === 'defect').length} 张</span></div>
       <Button variant="outline" isDisabled={!samples.length} onPress={() => navigate('review')}>下一步：筛选图片<ArrowRight size={16} /></Button></div>
-    {!!samples.length && <div className="filmstrip">{samples.slice(0, 6).map(item => <figure key={item.id}><img src={imageUrl(item.id)} alt={`${item.specimen_id} 已保存样本`} /><figcaption>{item.specimen_id}</figcaption></figure>)}</div>}
   </>
 }

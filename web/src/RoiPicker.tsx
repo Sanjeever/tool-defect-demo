@@ -1,11 +1,14 @@
 import { useRef, useState, type PointerEvent } from 'react'
 import { Button } from '@heroui/react'
 import { imageUrl, type Roi, type Sample } from './api'
+import usePanelSize from './usePanelSize'
 
 export default function RoiPicker({ sample, roi, onChange }: { sample?: Sample; roi: Roi; onChange: (roi: Roi) => void }) {
   const start = useRef<[number, number] | null>(null)
   const [draft, setDraft] = useState<Roi>(null)
   const shown = draft ?? roi
+  const stage = usePanelSize()
+  const scale = sample ? Math.min(stage.width / sample.width, stage.height / sample.height) : 0
   const point = (event: PointerEvent<HTMLDivElement>): [number, number] => {
     const bounds = event.currentTarget.getBoundingClientRect()
     return [Math.round(Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * sample!.width),
@@ -13,7 +16,7 @@ export default function RoiPicker({ sample, roi, onChange }: { sample?: Sample; 
   }
   const rectangle = (a: [number, number], b: [number, number]): NonNullable<Roi> => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])]
   return <section className="panel roi-panel"><div className="panel-toolbar"><h2>检测区域</h2><Button variant="ghost" size="sm" onPress={() => onChange(null)}>使用整图</Button></div>
-    <div className="roi-stage">{sample ? <div className="roi-image" onPointerDown={event => {
+    <div className="roi-stage" ref={stage.ref}>{sample ? <div className="roi-image" style={{ width: sample.width * scale, height: sample.height * scale }} onPointerDown={event => {
       if (event.button !== 0) return
       event.currentTarget.setPointerCapture(event.pointerId); start.current = point(event)
     }} onPointerMove={event => { if (start.current) setDraft(rectangle(start.current, point(event))) }}

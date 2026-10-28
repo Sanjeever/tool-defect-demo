@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@heroui/react'
-import { Aperture, ArrowRight, Check, X } from 'lucide-react'
+import { Aperture, ArrowRight, X } from 'lucide-react'
 import { api, type Camera, type Job, type Page, type Workspace } from './api'
 import Collect from './Collect'
 import Review from './Review'
@@ -80,10 +80,10 @@ export default function App() {
         {active && <span className="status status-running" role="status">{active.kind === 'detect' ? '检测中' : '模型创建中'}</span>}
       </div>
       {error && <div role="alert" className="error-bar"><span>{error}</span><Button variant="ghost" size="sm" isIconOnly aria-label="关闭错误" onPress={() => setError('')}><X size={16} /></Button></div>}
-      {loading ? <div className="empty" role="status">正在读取工作台…</div> : !tool.trim() ? <div className="empty">请填写刀具组名称</div>
+      <div className={`page-content page-${page}`}>{loading ? <div className="empty" role="status">正在读取工作台…</div> : !tool.trim() ? <div className="empty">请填写刀具组名称</div>
         : page === 'collect' ? <Collect key={`${tool}/${view}`} {...props} /> : page === 'review' ? <Review key={`${tool}/${view}`} {...props} /> : page === 'models' ? <Models key={`${tool}/${view}`} {...props} /> : <Detect key={`${tool}/${view}`} {...props} />}
+      </div>
       </main>
-      <footer className="workspace-footer"><span><Check size={12} /> 图片与模型保存在本机</span><span className="mono">GL0180040948</span></footer>
     </div>
   </div>
 }
