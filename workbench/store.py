@@ -8,7 +8,8 @@ from uuid import uuid4
 
 from PIL import Image
 
-from .preprocessing import IMAGE_SUFFIXES, prepare_directory
+from .preprocessing import IMAGE_SUFFIXES
+from .alignment import align, transform_boxes
 
 DEFECT_LABELS = ("磨损", "缺角", "划痕", "氧化")
 
@@ -48,6 +49,11 @@ class Workspace:
                 CREATE TABLE IF NOT EXISTS recipes (
                     tool_type TEXT NOT NULL, view TEXT NOT NULL,
                     roi TEXT, PRIMARY KEY (tool_type, view)
+                );
+                CREATE TABLE IF NOT EXISTS schemes (
+                    tool_type TEXT NOT NULL, view TEXT NOT NULL,
+                    anomaly_job TEXT NOT NULL, detector_job TEXT,
+                    PRIMARY KEY (tool_type, view)
                 );
             """)
 
@@ -143,11 +149,12 @@ class Workspace:
                 FROM images JOIN specimens USING (tool_type,specimen_id)
                 ORDER BY created_at DESC, path DESC
             """)]
+            schemes = [dict(row) for row in db.execute("SELECT * FROM schemes ORDER BY tool_type,view")]
         for item in images:
             item["boxes"] = json.loads(item["boxes"])
             item["included"] = bool(item["included"])
             item["annotated"] = bool(item["annotated"])
-        return {"specimens": specimens, "images": images, "labels": list(DEFECT_LABELS)}
+        return {"specimens": specimens, "images": images, "labels": list(DEFECT_LABELS), "schemes": schemes}
 
     def image(self, image_id):
         with self.connect() as db:
@@ -208,12 +215,12 @@ class Workspace:
     def plan(self, tool_type, model, view="top", experimental=False):
         component(tool_type)
         component(view)
-        if model not in {"patchcore", "classifier"}:
+        if model not in {"patchcore", "detector"}:
             raise ValueError("未知模型")
         selected = [item for item in self.state()["images"]
                     if item["tool_type"] == tool_type and item["view"] == view and item["included"]]
         issues = []
-        pending = [item for item in selected if item["quality"] == "unknown" or item["split"] == "unassigned"]
+        pending = [item for item in selected if not item["annotated"] or item["quality"] == "unknown" or item["split"] == "unassigned"]
         if pending and not experimental:
             issues.append(f"有 {len(pending)} 张已选图片尚未确定好坏或实体分组")
         images = [item for item in selected if item not in pending]
@@ -223,8 +230,6 @@ class Workspace:
             count["specimens"] = len({item["specimen_id"] for item in rows})
             for quality in ("good", "defect"):
                 count[quality] = sum(item["quality"] == quality for item in rows)
-        if experimental and model != "patchcore":
-            raise ValueError("实验建库适用于 PatchCore")
         if model == "patchcore":
             requirements = [("train", "good", "训练集正常图")]
             if not experimental:
@@ -236,29 +241,60 @@ class Workspace:
             if experimental:
                 images = [item for item in images if item["split"] == "train" and item["quality"] == "good"]
         else:
-            images = [item for item in images if item["quality"] == "defect"]
-            if any(not item["category"] for item in images):
-                issues.append("已选坏件需要填写真实缺陷类别")
-            classes = {item["category"] for item in images if item["split"] == "train" and item["category"]}
-            if len(classes) < 2:
-                issues.append("YOLO 分类需要至少两个真实缺陷类别")
-            for split in ("val", "test"):
-                split_classes = {item["category"] for item in images if item["split"] == split}
-                if (split == "val" or split_classes) and split_classes != classes:
-                    issues.append(f"{split} 缺陷类别必须与训练集一致，且每类需要不同实体")
+            if not any(item["split"] == "train" and item["boxes"] for item in images):
+                issues.append("缺少已完成缺陷框标注的训练图片")
+            if not experimental and not any(item["split"] == "val" and item["boxes"] for item in images):
+                issues.append("缺少独立验证实物的缺陷框图片")
+            if experimental:
+                images = [item for item in images if item["split"] == "train"]
+        if not any(item["split"] == "train" and item["quality"] == "good" for item in images):
+            issues.append("需要至少一张当前面合格的训练图片作为定位对齐参考")
         if not selected:
             issues.insert(0, "尚未选入图片，请先在图片库审核并勾选“用于数据集”")
-        if len({(item["width"], item["height"]) for item in images}) > 1:
-            issues.append("同一型号和拍摄面的训练图片需要保持相同原图尺寸")
         return {"ready": not issues, "issues": issues, "counts": counts, "images": images}
 
-    def export(self, plan, output, roi):
+    def export(self, plan, output, roi=None):
         output = Path(output)
-        raw = output / "raw"
+        output.mkdir(parents=True, exist_ok=True)
+        reference_item = next(item for item in plan["images"] if item["split"] == "train" and item["quality"] == "good")
+        with Image.open(self.root / reference_item["path"]) as image:
+            reference, _ = align(image)
+        reference.save(output / "reference.png")
+        datasets = {split: {"images": [], "annotations": [], "categories": [
+            {"id": index + 1, "name": label} for index, label in enumerate(DEFECT_LABELS)
+        ]} for split in ("train", "val", "test")}
+        transforms = {}
         for item in plan["images"]:
-            category = item["quality"] if plan["model"] == "patchcore" else item["category"]
-            target = raw / item["split"] / category / f"{item['id']}.png"
-            target.parent.mkdir(parents=True, exist_ok=True)
             with Image.open(self.root / item["path"]) as image:
-                image.save(target)
-        return prepare_directory(raw, output / "prepared", roi, 256)
+                prepared, metadata = align(image, reference)
+            transforms[item["id"]] = metadata
+            if plan["model"] == "patchcore":
+                target = output / "prepared" / item["split"] / item["quality"] / f"{item['id']}.png"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                prepared.resize((256, 256), Image.Resampling.LANCZOS).save(target)
+            else:
+                target = output / "prepared/images" / item["split"] / f"{item['id']}.png"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                prepared.save(target)
+                dataset = datasets[item["split"]]
+                image_index = len(dataset["images"]) + 1
+                dataset["images"].append({"id": image_index, "file_name": f"{item['id']}.png", "width": 512, "height": 512})
+                for box in transform_boxes(item["boxes"], metadata["matrix"], 512):
+                    dataset["annotations"].append({"id": len(dataset["annotations"]) + 1, "image_id": image_index,
+                        "category_id": DEFECT_LABELS.index(box["label"]) + 1, "bbox": [box[key] for key in ("x", "y", "width", "height")],
+                        "area": box["width"] * box["height"], "iscrowd": 0})
+        if plan["model"] == "detector":
+            annotations = output / "prepared/annotations"
+            annotations.mkdir(parents=True)
+            for split, dataset in datasets.items():
+                if dataset["images"]:
+                    (annotations / f"instances_{split}.json").write_text(json.dumps(dataset, ensure_ascii=False), encoding="utf-8")
+        (output / "transforms.json").write_text(json.dumps(transforms, ensure_ascii=False), encoding="utf-8")
+        return len(plan["images"])
+
+    def save_scheme(self, tool_type, view, anomaly_job, detector_job):
+        component(tool_type)
+        component(view)
+        with self.connect() as db:
+            db.execute("INSERT INTO schemes VALUES (?,?,?,?) ON CONFLICT(tool_type,view) DO UPDATE SET anomaly_job=excluded.anomaly_job,detector_job=excluded.detector_job",
+                       (tool_type, view, anomaly_job, detector_job))

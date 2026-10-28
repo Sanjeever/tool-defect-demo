@@ -8,7 +8,7 @@ from unittest.mock import patch
 from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from workbench.api import create_app
 from workbench.store import Workspace
@@ -25,9 +25,12 @@ class WorkspaceTests(unittest.TestCase):
         self.workspace.save_specimen("type_01", specimen, quality, split, category)
         path = self.root / "data/raw/pilot/type_01" / specimen / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("L", (60, 40), 128).save(path)
+        image = Image.new("L", (60, 40), 230)
+        ImageDraw.Draw(image).rectangle((15, 8, 45, 32), fill=45)
+        image.save(path)
         image_id, _ = self.workspace.add_image(path, "type_01", specimen)
-        self.workspace.update_image(image_id, included, [], quality=quality)
+        boxes = [{"x": 16, "y": 10, "width": 4, "height": 5, "label": "缺角"}] if quality == "defect" else []
+        self.workspace.update_image(image_id, included, boxes, quality=quality, annotated=quality != "unknown")
         return image_id
 
     def ready_workspace(self):
@@ -96,14 +99,15 @@ class WorkspaceTests(unittest.TestCase):
             with Image.open(path) as image:
                 self.assertEqual(image.size, (256, 256))
 
-    def test_classification_requires_real_classes_in_independent_entities(self):
+    def test_detection_requires_annotated_defects_and_normal_reference(self):
         self.add_image("bad_01", "defect", "train", category="崩角")
         self.add_image("bad_02", "defect", "val", category="崩角")
-        self.assertFalse(self.workspace.plan("type_01", "classifier")["ready"])
+        self.assertFalse(self.workspace.plan("type_01", "detector")["ready"])
         self.add_image("bad_03", "defect", "train", category="裂纹")
-        self.assertFalse(self.workspace.plan("type_01", "classifier")["ready"])
+        self.assertFalse(self.workspace.plan("type_01", "detector")["ready"])
         self.add_image("bad_04", "defect", "val", category="裂纹")
-        self.assertTrue(self.workspace.plan("type_01", "classifier")["ready"])
+        self.add_image("good_01", "good", "train")
+        self.assertTrue(self.workspace.plan("type_01", "detector")["ready"])
 
     def test_experimental_bank_contains_only_normal_training_images(self):
         self.add_image("good_01", "good", "train")
